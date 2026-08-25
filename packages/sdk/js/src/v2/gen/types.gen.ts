@@ -2426,6 +2426,43 @@ export type LocalAiInstalledModel = {
   vision?: boolean
 }
 
+export type LocalAiModelVariant = {
+  id: string
+  runtimeTag?: string
+  quantization?: string
+  downloadSizeBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  estimatedWeightBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  qualityMultiplier?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  speedMultiplier?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  notes?: Array<string>
+}
+
+export type LocalAiVariantEvaluation = {
+  variant: LocalAiModelVariant
+  runtimeTag?: string
+  score: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  compatibility: "excellent" | "good" | "usable" | "not_recommended"
+  offload: "none" | "partial" | "heavy" | "cpu_dominant"
+  reasons: Array<string>
+  warnings: Array<string>
+  estimated: {
+    weightsBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    kvCacheBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    overheadBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    reserveBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    totalBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    vramBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    ramBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    contextLength: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    comfortableMaximumContext?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    headroomBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    downloadBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  recommended: boolean
+  measuredTokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  metricSource: "estimated" | "measured"
+}
+
 export type LocalAiRecommendation = {
   model: {
     id: string
@@ -2444,22 +2481,29 @@ export type LocalAiRecommendation = {
       ollama?: string
     }
   }
-  variant: {
-    id: string
-    quantization?: string
-    downloadSizeBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    estimatedMemoryBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-  }
+  variant: LocalAiModelVariant
   score: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   compatibility: "excellent" | "good" | "usable" | "not_recommended"
+  offload: "none" | "partial" | "heavy" | "cpu_dominant"
+  confidence: "high" | "medium" | "low"
   reasons: Array<string>
   warnings: Array<string>
   estimated?: {
-    vramBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    weightsBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    kvCacheBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    overheadBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    reserveBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    totalBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    vramBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     ramBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    contextLength?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    contextLength: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    comfortableMaximumContext?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    headroomBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    downloadBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   }
   installed?: boolean
+  alternatives: Array<LocalAiVariantEvaluation>
+  readinessScore?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type LocalAiBenchmark = {
@@ -2468,6 +2512,11 @@ export type LocalAiBenchmark = {
   tokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   promptTokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   timeToFirstTokenMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  testedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type LocalAiReadinessSummary = {
+  score: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   testedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
@@ -2480,6 +2529,9 @@ export type LocalAiState = {
   recommendations: Array<LocalAiRecommendation>
   benchmarks: {
     [key: string]: LocalAiBenchmark
+  }
+  readiness: {
+    [key: string]: LocalAiReadinessSummary
   }
 }
 
@@ -2497,7 +2549,8 @@ export type LocalAiJob = {
   id: string
   kind: "install" | "benchmark" | "readiness"
   modelID?: string
-  state: "running" | "done" | "error"
+  runtimeTag?: string
+  state: "running" | "done" | "error" | "cancelled"
   status?: string
   percent?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   error?: string
@@ -8725,6 +8778,36 @@ export type LocalaiJobGetResponses = {
 }
 
 export type LocalaiJobGetResponse = LocalaiJobGetResponses[keyof LocalaiJobGetResponses]
+
+export type LocalaiJobCancelData = {
+  body?: never
+  path: {
+    jobID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/job/{jobID}/cancel"
+}
+
+export type LocalaiJobCancelErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiJobCancelError = LocalaiJobCancelErrors[keyof LocalaiJobCancelErrors]
+
+export type LocalaiJobCancelResponses = {
+  /**
+   * Cancellation requested
+   */
+  200: boolean
+}
+
+export type LocalaiJobCancelResponse = LocalaiJobCancelResponses[keyof LocalaiJobCancelResponses]
 
 export type McpStatusData = {
   body?: never

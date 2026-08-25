@@ -8,6 +8,8 @@ import { useLocal } from "../context/local"
 import { useTheme } from "../context/theme"
 import type { LocalAiJob, LocalAiRecommendation, LocalAiState } from "@opencode-ai/sdk/v2/types"
 
+type VariantEvaluation = LocalAiRecommendation["alternatives"][number]
+
 type Preset = NonNullable<Parameters<ReturnType<typeof useSDK>["client"]["localai"]["state"]>[0]>["preset"]
 
 // Generated SDK types encode JSON numbers as number | "-Infinity" | "NaN";
@@ -48,6 +50,13 @@ const COMPATIBILITY_LABEL = {
   good: "Good fit",
   usable: "Usable",
   not_recommended: "Not recommended",
+} as const
+
+const OFFLOAD_LABEL = {
+  none: "Fully in GPU memory",
+  partial: "Partial CPU offload",
+  heavy: "Heavy CPU offload",
+  cpu_dominant: "Mostly running on CPU",
 } as const
 
 export function DialogLocalAi() {
@@ -163,15 +172,33 @@ export function DialogLocalAi() {
       }
     }
 
-    for (const recommendation of value.recommendations) {
+    value.recommendations.forEach((recommendation, index) => {
+      const score = num(recommendation.score) ?? 0
+      const ctx = formatContext(num(recommendation.estimated?.contextLength))
+      const workingSet = formatBytes(num(recommendation.estimated?.totalBytes))
+      const selectedMetric = recommendation.alternatives.find((a) => a.variant.id === recommendation.variant.id)
+      const description = [
+        recommendation.variant.quantization ?? "default quantization",
+        COMPATIBILITY_LABEL[recommendation.compatibility],
+        `${ctx} context`,
+        `~${workingSet} working set`,
+        selectedMetric?.metricSource === "measured"
+          ? `${num(selectedMetric.measuredTokensPerSecond)} tok/s measured`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join(" · ")
       rows.push({
-        title: recommendation.model.name,
-        description: `${stars(num(recommendation.score) ?? 0)} · ${COMPATIBILITY_LABEL[recommendation.compatibility]}`,
-        category: `Recommended - ${PRESETS[presetIndex()].label}`,
+        title: index === 0 ? `★ ${recommendation.model.name}` : recommendation.model.name,
+        description: `${stars(score)} · ${description}`,
+        category:
+          index === 0 ? "★ Best for your PC" : `Recommended - ${PRESETS[presetIndex()].label}`,
         value: { type: "recommended" as const, recommendation },
-        footer: recommendation.installed ? "Installed" : formatBytes(num(recommendation.variant.downloadSizeBytes)),
+        footer: recommendation.installed
+          ? "Installed"
+          : formatBytes(num(recommendation.variant.downloadSizeBytes)),
       })
-    }
+    })
 
     return rows
   })
@@ -245,27 +272,34 @@ function LocalAiModelDetails(props: {
   const [busy, setBusy] = createSignal<string>()
 
   const rec = () => props.recommendation
-  const tag = () => rec().model.runtimes.ollama
+  // The recommended variant may differ from the model's default package
+  const tag = () => rec().variant.runtimeTag ?? rec().model.runtimes.ollama
   const installed = () => rec().installed
   const toast = useToast()
 
   const benchmark = () => (tag() ? props.state?.benchmarks?.[tag()!] : undefined)
+  const selectedEvaluation = () => rec().alternatives.find((a) => a.variant.id === rec().variant.id)
 
   const back = () => {
     dialog.replace(() => <DialogLocalAi />)
     props.onBack()
   }
 
-  const install = () => {
+  const install = (evaluation?: VariantEvaluation) => {
     if (busy()) return
     setBusy("install")
     void (async () => {
       try {
+        const target = evaluation ?? selectedEvaluation()
         const result = await sdk.client.localai.install({
-          localAiInstallInput: { profileID: rec().model.id },
+          localAiInstallInput: {
+            profileID: rec().model.id,
+            ...(target ? { variantID: target.variant.id } : {}),
+          },
         })
         if (!result.data) throw new Error(result.error?.message ?? "Failed to start install")
-        dialog.replace(() => <LocalAiInstallProgress jobID={result.data.id} modelTag={tag()} />)
+        const installTag = target?.runtimeTag ?? tag()
+        dialog.replace(() => <LocalAiInstallProgress jobID={result.data.id} modelTag={installTag} />)
       } catch (e) {
         setBusy(undefined)
         toast.show({
@@ -319,7 +353,8 @@ function LocalAiModelDetails(props: {
       value: object
     }
     const info: Row[] = []
-    const push = (row: Omit<Row, "value">) => info.push({ ...row, value: {} })
+    const push = (row: Omit<Row, "value"> & { value?: Row["value"] }) =>
+      info.push({ ...row, value: row.value ?? {} })
 
     push({
       title: COMPATIBILITY_LABEL[value.compatibility],
@@ -349,6 +384,21 @@ function LocalAiModelDetails(props: {
       disabled: true,
     })
     push({
+      title: "Offload",
+      description: OFFLOAD_LABEL[value.offload],
+      category: "Overview",
+      disabled: true,
+    })
+    const headroom = num(value.estimated?.headroomBytes)
+    if (headroom) {
+      push({
+        title: "Headroom",
+        description: `~${formatBytes(headroom)} of VRAM left free at the recommended context`,
+        category: "Overview",
+        disabled: true,
+      })
+    }
+    push({
       title: "Capabilities",
       description: [
         `coding ${num(value.model.capabilities.coding) ?? "?"}/100`,
@@ -369,18 +419,46 @@ function LocalAiModelDetails(props: {
       push({ title: `⚠ ${warning}`, category: "Recommended because", disabled: true })
     }
 
-    const measured = benchmark()
-    if (measured?.success) {
+    const evaluation = selectedEvaluation()
+    const measuredTps = num(evaluation?.measuredTokensPerSecond)
+    if (evaluation?.metricSource === "measured" && measuredTps) {
       push({
-        title: "Measured",
+        title: `Measured on this machine: ${measuredTps} tokens/sec`,
+        description: "Real benchmark of this exact quantization - overrides size estimates",
+        category: "Performance",
+        disabled: true,
+      })
+      const ttft = num(benchmark()?.timeToFirstTokenMs)
+      if (ttft) {
+        push({ title: `${ttft}ms to first token`, category: "Performance", disabled: true })
+      }
+    } else {
+      push({
+        title: "Estimated from model size and your hardware",
+        description: "No local benchmark yet - run Benchmark for real numbers",
+        category: "Performance",
+        disabled: true,
+      })
+    }
+
+    for (const alternative of value.alternatives) {
+      if (alternative.variant.id === value.variant.id) continue
+      const altCtx = formatContext(num(alternative.estimated?.contextLength))
+      push({
+        title: alternative.variant.quantization ?? alternative.variant.id,
         description: [
-          num(measured.tokensPerSecond) ? `${num(measured.tokensPerSecond)} tokens/sec` : undefined,
-          num(measured.timeToFirstTokenMs) ? `${num(measured.timeToFirstTokenMs)}ms to first token` : undefined,
+          COMPATIBILITY_LABEL[alternative.compatibility],
+          OFFLOAD_LABEL[alternative.offload],
+          `${altCtx} context`,
+          num(alternative.measuredTokensPerSecond) !== undefined
+            ? `${num(alternative.measuredTokensPerSecond)} tok/s measured`
+            : undefined,
         ]
           .filter(Boolean)
           .join(" · "),
-        category: "Benchmark (measured)",
-        disabled: true,
+        category: "Other variants",
+        footer: formatBytes(num(alternative.variant.downloadSizeBytes)),
+        value: { type: "variant" as const, variantID: alternative.variant.id },
       })
     }
 
@@ -398,6 +476,13 @@ function LocalAiModelDetails(props: {
           </text>
         </box>
       }
+      onSelect={(option) => {
+        const value = option.value as { type?: string; variantID?: string }
+        if (value.type === "variant" && value.variantID) {
+          const evaluation = rec().alternatives.find((a) => a.variant.id === value.variantID)
+          if (evaluation) install(evaluation)
+        }
+      }}
       actions={[
         {
           command: "local.ai.back",
@@ -407,10 +492,13 @@ function LocalAiModelDetails(props: {
         },
         {
           command: "local.ai.install",
-          title: busy() === "install" ? "Installing..." : "Install",
+          title:
+            busy() === "install"
+              ? "Installing..."
+              : `Install ${rec().variant.quantization ?? "Recommended"}`,
           hidden: !!installed(),
           disabled: !!busy(),
-          onTrigger: install,
+          onTrigger: () => install(),
         },
         {
           command: "local.ai.use",
@@ -465,6 +553,7 @@ function LocalAiInstallProgress(props: { jobID: string; modelTag?: string }) {
     const value = job()
     if (!value) return "Starting download..."
     if (value.state === "done") return "✓ Installed - selected as active model"
+    if (value.state === "cancelled") return "Download cancelled"
     if (value.state === "error") return `✗ ${value.error ?? "Install failed"}`
     const percent = num(value.percent)
     return [value.status, percent !== undefined ? ProgressBar({ percent }) : undefined].filter(Boolean).join("\n")
@@ -472,20 +561,35 @@ function LocalAiInstallProgress(props: { jobID: string; modelTag?: string }) {
 
   const done = () => job()?.state === "done"
   const failed = () => job()?.state === "error"
+  const cancelled = () => job()?.state === "cancelled"
+
+  const cancelDownload = async () => {
+    try {
+      await sdk.client.localai.job.cancel({ jobID: props.jobID })
+    } catch {}
+  }
+
+  const finished = () => done() || failed() || cancelled()
 
   return (
     <DialogSelect
       title={`Installing ${props.modelTag ?? "model"}`}
       options={[
         {
-          title: done() ? "Installed" : failed() ? "Failed" : "Downloading...",
+          title: done()
+            ? "Installed"
+            : failed()
+              ? "Failed"
+              : cancelled()
+                ? "Cancelled"
+                : "Downloading...",
           description: statusText(),
           value: {},
           disabled: true,
         },
       ]}
       actions={
-        done() || failed()
+        finished()
           ? [
               {
                 command: "local.ai.close",
@@ -493,7 +597,13 @@ function LocalAiInstallProgress(props: { jobID: string; modelTag?: string }) {
                 onTrigger: () => dialog.clear(),
               },
             ]
-          : []
+          : [
+              {
+                command: "local.ai.cancel-download",
+                title: "Cancel download",
+                onTrigger: () => void cancelDownload(),
+              },
+            ]
       }
       footer={
         <box paddingBottom={1}>
@@ -501,7 +611,9 @@ function LocalAiInstallProgress(props: { jobID: string; modelTag?: string }) {
             when={!failed()}
             fallback={<text style={{ fg: theme.error }}>The download did not complete. Nothing was changed.</text>}
           >
-            <text style={{ fg: theme.textMuted }}>You can keep working while the model downloads.</text>
+            <Show when={!cancelled()} fallback={<text style={{ fg: theme.textMuted }}>Download stopped. You can restart it anytime.</text>}>
+              <text style={{ fg: theme.textMuted }}>You can keep working while the model downloads.</text>
+            </Show>
           </Show>
         </box>
       }

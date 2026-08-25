@@ -46,5 +46,6 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
           return job
         }),
       )
+      .handle("jobCancel", (ctx: { params: { jobID: string } }) => localai.cancel(ctx.params.jobID))
   }),
 )

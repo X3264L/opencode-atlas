@@ -27,6 +27,28 @@ interface FetchLike {
   ): Promise<Response>
 }
 
+// Some runtimes do not reject in-flight body reads when the fetch signal
+// aborts; racing the read against the signal guarantees prompt cancellation.
+function abortableReader(body: ReadableStream<Uint8Array>, signal?: AbortSignal) {
+  const reader = body.getReader()
+  let onAbort: (() => void) | undefined
+  const abortPromise = new Promise<never>((_, reject) => {
+    if (!signal) return
+    onAbort = () => reject(new DOMException("Aborted", "AbortError"))
+    if (signal.aborted) onAbort()
+    else signal.addEventListener("abort", onAbort, { once: true })
+  })
+  return {
+    read() {
+      return signal ? Promise.race([reader.read(), abortPromise]) : reader.read()
+    },
+    dispose() {
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort)
+      void reader.cancel().catch(() => {})
+    },
+  }
+}
+
 function parseParameterCount(raw: string | undefined): number | undefined {
   if (!raw) return undefined
   const match = /([0-9.]+)\s*(b|m)/i.exec(raw)
@@ -164,34 +186,38 @@ export function createOllamaAdapter(options?: { endpoint?: string; fetch?: Fetch
       if (!res.ok) throw new Error(`Failed to pull ${model.id}: HTTP ${res.status}`)
       if (!res.body) throw new Error(`Failed to pull ${model.id}: empty response`)
 
-      const reader = res.body.getReader()
+      const reader = abortableReader(res.body, installOptions?.signal)
       const decoder = new TextDecoder()
       let buffer = ""
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n")
-        buffer = lines.pop() ?? ""
-        for (const line of lines) {
-          if (!line.trim()) continue
-          let event: { status?: string; total?: number; completed?: number; error?: string }
-          try {
-            event = JSON.parse(line)
-          } catch {
-            continue
-          }
-          if (event.error) throw new Error(event.error)
-          if (installOptions?.onProgress && event.status) {
-            installOptions.onProgress({
-              status: event.status,
-              percent:
-                event.total && event.completed !== undefined && event.total > 0
-                  ? Math.min(100, Math.round((event.completed / event.total) * 100))
-                  : undefined,
-            })
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split("\n")
+          buffer = lines.pop() ?? ""
+          for (const line of lines) {
+            if (!line.trim()) continue
+            let event: { status?: string; total?: number; completed?: number; error?: string }
+            try {
+              event = JSON.parse(line)
+            } catch {
+              continue
+            }
+            if (event.error) throw new Error(event.error)
+            if (installOptions?.onProgress && event.status) {
+              installOptions.onProgress({
+                status: event.status,
+                percent:
+                  event.total && event.completed !== undefined && event.total > 0
+                    ? Math.min(100, Math.round((event.completed / event.total) * 100))
+                    : undefined,
+              })
+            }
           }
         }
+      } finally {
+        reader.dispose()
       }
     },
 
@@ -232,25 +258,29 @@ export function createOllamaAdapter(options?: { endpoint?: string; fetch?: Fetch
         if (!res.ok) throw new Error(`Benchmark request failed with HTTP ${res.status}`)
         if (!res.body) throw new Error("Benchmark response had no body")
 
-        const reader = res.body.getReader()
+        const reader = abortableReader(res.body, benchmarkOptions?.signal)
         const decoder = new TextDecoder()
         let buffer = ""
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split("\n")
-          buffer = lines.pop() ?? ""
-          for (const line of lines) {
-            if (!line.trim()) continue
-            try {
-              const event = JSON.parse(line)
-              if (timeToFirstTokenMs === undefined && event.response) {
-                timeToFirstTokenMs = Date.now() - startedAt
-              }
-              if (event.done) final = event
-            } catch {}
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split("\n")
+            buffer = lines.pop() ?? ""
+            for (const line of lines) {
+              if (!line.trim()) continue
+              try {
+                const event = JSON.parse(line)
+                if (timeToFirstTokenMs === undefined && event.response) {
+                  timeToFirstTokenMs = Date.now() - startedAt
+                }
+                if (event.done) final = event
+              } catch {}
+            }
           }
+        } finally {
+          reader.dispose()
         }
 
         const tokensPerSecond =

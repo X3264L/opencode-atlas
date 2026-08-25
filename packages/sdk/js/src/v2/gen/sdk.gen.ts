@@ -95,6 +95,8 @@ import type {
   LocalaiInstallErrors,
   LocalAiInstallInput,
   LocalaiInstallResponses,
+  LocalaiJobCancelErrors,
+  LocalaiJobCancelResponses,
   LocalaiJobGetErrors,
   LocalaiJobGetResponses,
   LocalAiModelInput,
@@ -2298,13 +2300,45 @@ export class Job extends HeyApiClient {
       ...params,
     })
   }
+
+  /**
+   * Cancel a running job
+   *
+   * Request cancellation of a running install or benchmark. The job enters the cancelled state.
+   */
+  public cancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      jobID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "jobID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LocalaiJobCancelResponses, LocalaiJobCancelErrors, ThrowOnError>({
+      url: "/localai/job/{jobID}/cancel",
+      ...options,
+      ...params,
+    })
+  }
 }
 
 export class Localai extends HeyApiClient {
   /**
    * Get local AI state
    *
-   * Detect local hardware and runtimes, list installed models, and get hardware-aware model recommendations.
+   * Detect local hardware and runtimes, list installed models, and get hardware-aware model recommendations including per-variant evaluations.
    */
   public state<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2334,9 +2368,9 @@ export class Localai extends HeyApiClient {
   }
 
   /**
-   * Install a recommended model
+   * Install a recommended model variant
    *
-   * Start downloading a catalog model through Ollama. Poll the returned job for progress.
+   * Start downloading a catalog model through Ollama. The selected variant resolves to its own runtime tag. Poll the returned job for progress.
    */
   public install<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2410,7 +2444,7 @@ export class Localai extends HeyApiClient {
   /**
    * Benchmark an installed model
    *
-   * Measure real generation speed of an installed local model. Poll the returned job.
+   * Measure real generation speed of an installed local model. Results are stored per exact runtime tag. Poll the returned job.
    */
   public benchmark<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2447,7 +2481,7 @@ export class Localai extends HeyApiClient {
   /**
    * Run agent readiness test
    *
-   * Probe chat, streaming, tool calling and structured output support of a local model.
+   * Probe chat, streaming, tool calling and structured output support of a local model. Results feed agent-preset recommendations.
    */
   public readiness<ThrowOnError extends boolean = false>(
     parameters?: {
