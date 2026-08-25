@@ -1,12 +1,19 @@
 import { createMemo, createSignal, onCleanup, onMount, Show, Switch, Match } from "solid-js"
 import type { JSX } from "solid-js"
 import { DialogSelect } from "../ui/dialog-select"
+import { DialogPrompt } from "../ui/dialog-prompt"
 import { useDialog } from "../ui/dialog"
 import { useToast } from "../ui/toast"
 import { useSDK } from "../context/sdk"
 import { useLocal } from "../context/local"
 import { useTheme } from "../context/theme"
-import type { LocalAiJob, LocalAiRecommendation, LocalAiState } from "@opencode-ai/sdk/v2/types"
+import type {
+  LocalAiJob,
+  LocalAiManagedArtifact,
+  LocalAiManagedLogs,
+  LocalAiRecommendation,
+  LocalAiState,
+} from "@opencode-ai/sdk/v2/types"
 
 type VariantEvaluation = LocalAiRecommendation["alternatives"][number]
 
@@ -76,16 +83,26 @@ function runtimeStatusIcon(state: string | undefined, available: boolean) {
 export function DialogLocalAi() {
   const sdk = useSDK()
   const dialog = useDialog()
+  const toast = useToast()
   const [state, setState] = createSignal<LocalAiState>()
+  const [managed, setManaged] = createSignal<LocalAiManagedArtifact[]>()
+  const [executable, setExecutable] = createSignal<{ found: boolean; path?: string; reason?: string }>()
   const [error, setError] = createSignal<string>()
   const [presetIndex, setPresetIndex] = createSignal(0)
 
   const load = async (preset?: Preset) => {
     setError(undefined)
     try {
-      const result = await sdk.client.localai.state(preset ? { preset } : {})
+      const [result, managedResult] = await Promise.all([
+        sdk.client.localai.state(preset ? { preset } : {}),
+        sdk.client.localai.managed.state(),
+      ])
       if (result.data) setState(result.data)
       else setError(result.error?.message ?? "Failed to detect local AI state")
+      if (managedResult.data) {
+        setManaged(managedResult.data.artifacts)
+        setExecutable(managedResult.data.executable)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to detect local AI state")
     }
@@ -112,6 +129,72 @@ export function DialogLocalAi() {
 
   const openRecommendation = (recommendation: LocalAiRecommendation) => {
     dialog.replace(() => <LocalAiModelDetails recommendation={recommendation} state={state()} onBack={refresh} />)
+  }
+
+  const importGguf = () => {
+    dialog.replace(
+      () => (
+        <DialogPrompt
+          title="Import GGUF"
+          placeholder="C:\Models\Qwen-Coder-14B-Q6_K.gguf"
+          onConfirm={(value) => {
+            void (async () => {
+              try {
+                const result = await sdk.client.localai.managed.register({ localAiGgufRegisterInput: { path: value.trim() } })
+                if (!result.data) throw new Error(result.error?.message ?? "Registration failed")
+                dialog.replace(() => <DialogLocalAi />)
+                await load(PRESETS[presetIndex()].id)
+              } catch (e) {
+                toast.show({
+                  title: "Import failed",
+                  message: e instanceof Error ? e.message : "Could not register the GGUF file",
+                  variant: "error",
+                })
+                dialog.replace(() => <DialogLocalAi />)
+              }
+            })()
+          }}
+          onCancel={() => dialog.replace(() => <DialogLocalAi />)}
+        />
+      ),
+    )
+  }
+
+  const configureExecutable = () => {
+    dialog.replace(
+      () => (
+        <DialogPrompt
+          title="llama-server path"
+          placeholder="C:\Tools\llama.cpp\llama-server.exe"
+          value={executable()?.path}
+          onConfirm={(value) => {
+            void (async () => {
+              try {
+                await sdk.client.localai.managed.executable({ localAiExecutablePathInput: value.trim() ? { path: value.trim() } : {} })
+              } catch {}
+              dialog.replace(() => <DialogLocalAi />)
+              await load(PRESETS[presetIndex()].id)
+            })()
+          }}
+          onCancel={() => dialog.replace(() => <DialogLocalAi />)}
+        />
+      ),
+    )
+  }
+
+  const openManagedArtifact = (artifactID: string) => {
+    const artifact = managed()?.find((entry) => entry.artifact.id === artifactID)
+    if (!artifact) return
+    dialog.replace(() => (
+      <LocalAiManagedDetails
+        artifact={artifact}
+        executable={executable()}
+        onRemoved={async () => {
+          dialog.replace(() => <DialogLocalAi />)
+          await load(PRESETS[presetIndex()].id)
+        }}
+      />
+    ))
   }
 
   const options = createMemo(() => {
@@ -213,6 +296,33 @@ export function DialogLocalAi() {
       }
     }
 
+    for (const artifact of managed() ?? []) {
+      const instance = artifact.instance
+      const stateText = !artifact.fileExists
+        ? "Missing file"
+        : instance
+          ? `${instance.state}${instance.endpoint ? ` · ${instance.endpoint.replace("http://", "")}` : ""}`
+          : "Stopped"
+      rows.push({
+        title: [
+          artifact.artifact.displayName,
+          artifact.artifact.quantization,
+          !artifact.fileExists ? "(missing)" : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        description: [
+          stateText,
+          num(artifact.recommendedContext) ? `${formatContext(num(artifact.recommendedContext))} recommended` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        category: "Atlas-managed (llama.cpp)",
+        value: { type: "managed" as const, artifactID: artifact.artifact.id },
+        footer: "Managed",
+      })
+    }
+
     value.recommendations.forEach((recommendation, index) => {
       const score = num(recommendation.score) ?? 0
       const ctx = formatContext(num(recommendation.estimated?.contextLength))
@@ -265,6 +375,16 @@ export function DialogLocalAi() {
               onTrigger: () => void cyclePreference(),
             },
             {
+              command: "local.ai.import-gguf",
+              title: "Import GGUF",
+              onTrigger: importGguf,
+            },
+            {
+              command: "local.ai.llama-server-path",
+              title: executable()?.found ? "llama-server path" : "Configure llama-server path",
+              onTrigger: configureExecutable,
+            },
+            {
               command: "local.ai.refresh",
               title: "Refresh",
               side: "left",
@@ -272,8 +392,9 @@ export function DialogLocalAi() {
             },
           ]}
           onSelect={(option) => {
-            const value = option.value as { type?: string; recommendation?: LocalAiRecommendation }
+            const value = option.value as { type?: string; recommendation?: LocalAiRecommendation; artifactID?: string }
             if (value.type === "recommended" && value.recommendation) openRecommendation(value.recommendation)
+            if (value.type === "managed" && value.artifactID) openManagedArtifact(value.artifactID)
           }}
         />
       </Match>
@@ -612,6 +733,227 @@ function LocalAiModelDetails(props: {
           hidden: !installed(),
           disabled: !!busy(),
           onTrigger: () => void runReadiness(),
+        },
+      ]}
+    />
+  )
+}
+
+function LocalAiManagedDetails(props: {
+  artifact: LocalAiManagedArtifact
+  executable?: { found: boolean; path?: string; reason?: string }
+  onRemoved: () => Promise<void>
+}) {
+  const sdk = useSDK()
+  const dialog = useDialog()
+  const toast = useToast()
+  const { theme } = useTheme()
+  const [busy, setBusy] = createSignal<string>()
+  const [instance, setInstance] = createSignal(props.artifact.instance)
+
+  const artifactID = () => props.artifact.artifact.id
+  const running = () => instance()?.state === "running" || instance()?.state === "starting"
+
+  const back = async () => {
+    dialog.replace(() => <DialogLocalAi />)
+  }
+
+  const runLifecycle = async (action: "start" | "stop" | "restart") => {
+    if (busy()) return
+    setBusy(action)
+    try {
+      const result =
+        action === "start"
+          ? await sdk.client.localai.managed.start({ artifactID: artifactID() })
+          : action === "stop"
+            ? await sdk.client.localai.managed.stop({ instanceID: instance()?.id ?? "" })
+            : await sdk.client.localai.managed.restart({ instanceID: instance()?.id ?? "" })
+      if (result.data) {
+        setInstance(result.data)
+        toast.show({
+          title:
+            result.data.state === "running"
+              ? "Model running"
+              : result.data.state === "failed" || result.data.state === "crashed"
+                ? "Start failed"
+                : "Stopped",
+          message: result.data.lastError ?? result.data.endpoint ?? "",
+          variant: result.data.state === "running" ? "success" : result.data.state === "stopped" ? "info" : "error",
+        })
+        if (result.data.state === "failed" || result.data.state === "crashed") setInstance(undefined)
+      } else {
+        throw new Error(result.error?.message ?? "Operation failed")
+      }
+    } catch (e) {
+      toast.show({
+        title: `${action} failed`,
+        message: e instanceof Error ? e.message : "Operation failed",
+        variant: "error",
+      })
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
+  const showLogs = async () => {
+    if (!instance()) return
+    setBusy("logs")
+    try {
+      const result = await sdk.client.localai.managed.logs({ instanceID: instance()!.id })
+      const lines: string[] = (result.data as LocalAiManagedLogs | undefined)?.lines.map(
+        (line) => `[${new Date(line.at).toLocaleTimeString()}] [${line.source}] ${line.line}`,
+      ) ?? ["No logs captured yet"]
+      dialog.replace(() => (
+        <DialogSelect
+          title={`llama.cpp logs`}
+          options={lines.slice(-60).map((line) => ({ title: line, value: {}, disabled: true }))}
+          actions={[
+            {
+              command: "local.ai.back",
+              title: "Back",
+          onTrigger: () =>
+            dialog.replace(() => (
+              <LocalAiManagedDetails
+                artifact={props.artifact}
+                executable={props.executable}
+                onRemoved={props.onRemoved}
+              />
+            )),
+            },
+          ]}
+          footer={
+            <box paddingBottom={1}>
+              <text style={{ fg: theme.textMuted }}>Last captured lines from the Atlas-owned process.</text>
+            </box>
+          }
+        />
+      ))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
+  const rows = () => {
+    const info = [
+      {
+        title: !props.artifact.fileExists ? "Missing file" : (instance()?.state ?? "Stopped"),
+        description: props.artifact.fileExists
+          ? props.artifact.artifact.path
+          : "The registered GGUF path no longer exists",
+        value: {},
+        disabled: true,
+        category: "Overview",
+        footer: props.artifact.artifact.quantization,
+      },
+      {
+        title: "Context",
+        description: num(props.artifact.recommendedContext)
+          ? `${formatContext(num(props.artifact.recommendedContext))} recommended for this hardware`
+          : "Hardware recommendation unavailable",
+        value: {},
+        disabled: true,
+        category: "Overview",
+      },
+      ...(num(props.artifact.artifact.sizeBytes)
+        ? [
+            {
+              title: `~${formatBytes(num(props.artifact.artifact.sizeBytes))} on disk`,
+              description: "Referenced in place - never copied by Atlas",
+              value: {},
+              disabled: true,
+              category: "Overview",
+            },
+          ]
+        : []),
+      ...(!props.executable?.found
+        ? [
+            {
+              title: "llama-server not found",
+              description: props.executable?.reason,
+              value: {},
+              disabled: true,
+              category: "Executable",
+            },
+          ]
+        : [
+            {
+              title: `llama-server: ${props.executable.path}`,
+              description: "Discovered or explicitly configured",
+              value: {},
+              disabled: true,
+              category: "Executable",
+            },
+          ]),
+    ]
+    return info
+  }
+
+  return (
+    <DialogSelect
+      title={props.artifact.artifact.displayName}
+      options={rows()}
+      footer={
+        <box paddingBottom={1}>
+          <text style={{ fg: theme.textMuted }}>
+            {running() ? `Owned process · ${instance()?.endpoint}` : "Atlas manages the process lifecycle only"}
+          </text>
+        </box>
+      }
+      actions={[
+        {
+          command: "local.ai.back",
+          title: "Back",
+          side: "left",
+          onTrigger: () => void back(),
+        },
+        {
+          command: "local.ai.start-managed",
+          title: busy() === "start" ? "Starting..." : "Start",
+          hidden: running(),
+          disabled: !!busy() || !props.executable?.found || !props.artifact.fileExists,
+          onTrigger: () => void runLifecycle("start"),
+        },
+        {
+          command: "local.ai.stop-managed",
+          title: busy() === "stop" ? "Stopping..." : "Stop",
+          hidden: !running(),
+          disabled: !!busy(),
+          onTrigger: () => void runLifecycle("stop"),
+        },
+        {
+          command: "local.ai.restart-managed",
+          title: busy() === "restart" ? "Restarting..." : "Restart",
+          hidden: !running(),
+          disabled: !!busy(),
+          onTrigger: () => void runLifecycle("restart"),
+        },
+        {
+          command: "local.ai.logs",
+          title: "Logs",
+          hidden: !instance(),
+          disabled: !!busy(),
+          onTrigger: () => void showLogs(),
+        },
+        {
+          command: "local.ai.remove-registration",
+          title: "Remove registration",
+          hidden: running(),
+          disabled: !!busy(),
+          onTrigger: () => {
+            void (async () => {
+              try {
+                const result = await sdk.client.localai.managed.remove({ artifactID: artifactID() })
+                if (!result.data) throw new Error(result.error?.message ?? "Failed to remove")
+                await props.onRemoved()
+              } catch (e) {
+                toast.show({
+                  title: "Remove failed",
+                  message: e instanceof Error ? e.message : "Failed to remove registration",
+                  variant: "error",
+                })
+              }
+            })()
+          },
         },
       ]}
     />

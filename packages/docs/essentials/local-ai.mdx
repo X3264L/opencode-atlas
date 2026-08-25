@@ -17,10 +17,30 @@ OpenCode can run coding agents against local models on your own machine. Open `/
 
 Notes:
 
-- **Ollama** is the reference runtime and the only one with full Atlas-managed lifecycle today.
+- **Ollama** is the reference runtime and the only one with full Atlas-managed lifecycle for registry pulls today.
 - **LM Studio**: Atlas detects a running server (default `http://127.0.0.1:1234`, override with `LMSTUDIO_HOST`) and can use every exposed model for inference, benchmarks and readiness. Model downloads stay inside the LM Studio app - Atlas does not fake install buttons.
-- **llama.cpp**: Atlas targets an externally running `llama-server` (default `http://127.0.0.1:8080`, override with `LLAMACPP_HOST`). GGUF filenames are parsed for quantization labels (e.g. `-q6_k`) so identities stay meaningful. Automatic process launching is not part of this release.
+- **llama.cpp**: two modes.
+  - *External*: Atlas targets an already-running `llama-server` (default `http://127.0.0.1:8080`, override with `LLAMACPP_HOST`).
+  - *Atlas-managed*: you register a local `.gguf` file in `/local`, point Atlas at your `llama-server` executable once, and Atlas owns the process lifecycle - launch on a free loopback port, health-gated startup, stop/restart, bounded log capture, and cleanup on normal OpenCode shutdown. See [Managed llama.cpp](#managed-llamacpp).
+  - GGUF filenames are parsed for quantization labels (e.g. `-q6_k`) so identities stay meaningful.
 - **MLX**: requires macOS on Apple Silicon; on any other platform it reports "unsupported" and is never probed as a backend. Point it at an MLX server (`MLX_HOST`, default port 8080). Recommendations still use unified-memory awareness from shared hardware detection.
+
+## Managed llama.cpp
+
+For GGUF users who do not want to touch a terminal:
+
+```text
+/local → Import GGUF → path → Start
+```
+
+How it works:
+
+1. **Register** - Atlas validates the file exists, is a regular `.gguf`, and derives identity from the filename when confident (`Qwen3-Coder-30B-Q6_K.gguf` → family/size/Q6_K). Unknown models stay "Unknown GGUF model". The registration is a lightweight reference; **the file is never copied, moved, modified, or deleted**.
+2. **Executable** - Atlas locates `llama-server` from an explicit path you configure (persisted), then PATH lookup, then a few common install locations. **Atlas never downloads binaries automatically.**
+3. **Launch** - a typed argument array is spawned directly (`shell:false` by construction): model path, loopback host `127.0.0.1`, an OS-assigned free port, and hardware-recommended settings (context size from SUPER++ 002's recommendation; GPU layers forced to CPU-only machines). No shell interpolation is ever involved, so paths with spaces are safe.
+4. **Health gate** - startup waits until `/health` reports ready (model loading tolerated) within a bounded deadline; bind collisions retry on a fresh port a small number of times before failing cleanly.
+5. **Use** - once running, the managed endpoint feeds the normal llama.cpp runtime/provider flow: the model appears in OpenCode's picker, and Benchmark/Readiness target it like any other instance.
+6. **Own** - Stop/Restart act only on processes Atlas started (tracked by live child handle, never by persisted PID alone). Logs are captured into a bounded tail buffer viewable in `/local`. Normal OpenCode termination cleans up owned children; after a crash of Atlas itself the old process may survive but is never re-signalled - it shows as stale instead.
 
 ## How recommendations work
 
@@ -62,8 +82,9 @@ Before installing, OpenCode checks free disk space on the Ollama models director
 
 ## Current limitations
 
-- Install/remove require Ollama; other runtimes manage their own model files.
-- llama.cpp support targets an already-running external server; no automatic process management yet.
-- GGUF import by file picker is not implemented; llama.cpp models are discovered through the server's own listing.
-- MLX integration assumes an OpenAI-compatible MLX server is already running.
+- Registry pulls (install/remove) require Ollama; llama.cpp GGUFs and LM Studio/MLX models are referenced or managed externally by design.
+- Managed llama.cpp requires you to already have `llama-server` installed; Atlas does not download binaries.
+- Managed servers bind loopback only; LAN/remote serving is out of scope.
+- Cleanup guarantees apply to processes Atlas started during the current session; after a hard OS kill, a previously spawned server may keep running (shown as stale, never signalled).
+- MLX integration assumes an OpenAI-compatible MLX server is already running; no Python environment management.
 - All pre-install numbers are estimates derived from parameter counts and public quantization profiles; only benchmark/readiness results are measured.

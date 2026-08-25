@@ -92,6 +92,8 @@ import type {
   InstanceDisposeResponses,
   LocalaiBenchmarkErrors,
   LocalaiBenchmarkResponses,
+  LocalAiExecutablePathInput,
+  LocalAiGgufRegisterInput,
   LocalaiInstallErrors,
   LocalAiInstallInput,
   LocalaiInstallResponses,
@@ -99,6 +101,22 @@ import type {
   LocalaiJobCancelResponses,
   LocalaiJobGetErrors,
   LocalaiJobGetResponses,
+  LocalaiManagedExecutableErrors,
+  LocalaiManagedExecutableResponses,
+  LocalaiManagedLogsErrors,
+  LocalaiManagedLogsResponses,
+  LocalaiManagedRegisterErrors,
+  LocalaiManagedRegisterResponses,
+  LocalaiManagedRemoveErrors,
+  LocalaiManagedRemoveResponses,
+  LocalaiManagedRestartErrors,
+  LocalaiManagedRestartResponses,
+  LocalaiManagedStartErrors,
+  LocalaiManagedStartResponses,
+  LocalaiManagedStateErrors,
+  LocalaiManagedStateResponses,
+  LocalaiManagedStopErrors,
+  LocalaiManagedStopResponses,
   LocalAiModelInput,
   LocalAiPreferenceInput,
   LocalaiPreferenceSetErrors,
@@ -2380,6 +2398,290 @@ export class Preference extends HeyApiClient {
   }
 }
 
+export class Managed extends HeyApiClient {
+  /**
+   * Get managed llama.cpp state
+   *
+   * Registered GGUF artifacts (by reference - files are never copied or modified), executable discovery status, and per-artifact instance state.
+   */
+  public state<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<LocalaiManagedStateResponses, LocalaiManagedStateErrors, ThrowOnError>({
+      url: "/localai/managed",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Register a local GGUF file
+   *
+   * Validates an existing .gguf file and stores a lightweight registration referencing it. The file is never copied, moved, or modified.
+   */
+  public register<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      localAiGgufRegisterInput?: LocalAiGgufRegisterInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "localAiGgufRegisterInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      LocalaiManagedRegisterResponses,
+      LocalaiManagedRegisterErrors,
+      ThrowOnError
+    >({
+      url: "/localai/managed/register",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Remove a GGUF registration
+   *
+   * Removes the Atlas registration. Running instances must be stopped first; the GGUF file itself is never deleted.
+   */
+  public remove<ThrowOnError extends boolean = false>(
+    parameters: {
+      artifactID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "artifactID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      LocalaiManagedRemoveResponses,
+      LocalaiManagedRemoveErrors,
+      ThrowOnError
+    >({
+      url: "/localai/managed/artifact/{artifactID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Start a managed llama.cpp instance
+   *
+   * Launches llama-server on a free loopback port with hardware-recommended context and waits for health. Only loopback binding is supported.
+   */
+  public start<ThrowOnError extends boolean = false>(
+    parameters: {
+      artifactID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "artifactID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LocalaiManagedStartResponses, LocalaiManagedStartErrors, ThrowOnError>(
+      {
+        url: "/localai/managed/artifact/{artifactID}/start",
+        ...options,
+        ...params,
+      },
+    )
+  }
+
+  /**
+   * Stop a managed instance
+   *
+   * Gracefully terminates an Atlas-owned instance; only processes spawned by Atlas are ever signalled.
+   */
+  public stop<ThrowOnError extends boolean = false>(
+    parameters: {
+      instanceID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "instanceID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LocalaiManagedStopResponses, LocalaiManagedStopErrors, ThrowOnError>({
+      url: "/localai/managed/instance/{instanceID}/stop",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Restart a managed instance
+   *
+   * Stops the owned instance and starts it again with the same launch configuration.
+   */
+  public restart<ThrowOnError extends boolean = false>(
+    parameters: {
+      instanceID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "instanceID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      LocalaiManagedRestartResponses,
+      LocalaiManagedRestartErrors,
+      ThrowOnError
+    >({
+      url: "/localai/managed/instance/{instanceID}/restart",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get managed instance logs
+   *
+   * Returns the most recent bounded stdout/stderr lines captured from an Atlas-owned process.
+   */
+  public logs<ThrowOnError extends boolean = false>(
+    parameters: {
+      instanceID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "instanceID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<LocalaiManagedLogsResponses, LocalaiManagedLogsErrors, ThrowOnError>({
+      url: "/localai/managed/instance/{instanceID}/logs",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Configure llama-server executable path
+   *
+   * Stores or clears the explicit llama-server path. Atlas validates the file exists; binaries are never downloaded automatically.
+   */
+  public executable<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      localAiExecutablePathInput?: LocalAiExecutablePathInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "localAiExecutablePathInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      LocalaiManagedExecutableResponses,
+      LocalaiManagedExecutableErrors,
+      ThrowOnError
+    >({
+      url: "/localai/managed/executable",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Localai extends HeyApiClient {
   /**
    * Get local AI state
@@ -2569,6 +2871,11 @@ export class Localai extends HeyApiClient {
   private _preference?: Preference
   get preference(): Preference {
     return (this._preference ??= new Preference({ client: this.client }))
+  }
+
+  private _managed?: Managed
+  get managed(): Managed {
+    return (this._managed ??= new Managed({ client: this.client }))
   }
 }
 

@@ -2622,6 +2622,68 @@ export type LocalAiPreferenceInput = {
   runtime: "auto" | "ollama" | "lmstudio" | "llamacpp" | "mlx"
 }
 
+export type LocalAiGgufArtifact = {
+  id: string
+  path: string
+  displayName: string
+  modelID?: string
+  variantID?: string
+  quantization?: string
+  family?: string
+  parameterCount?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  sizeBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  launchOverrides?: {
+    contextSize?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    gpuLayers?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    threads?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  registeredAt: string
+}
+
+export type LocalAiManagedInstance = {
+  id: string
+  artifactID: string
+  state: "starting" | "running" | "stopping" | "stopped" | "crashed" | "failed"
+  endpoint?: string
+  startedAt?: string
+  exitCode?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  lastError?: string
+}
+
+export type LocalAiManagedArtifact = {
+  artifact: LocalAiGgufArtifact
+  fileExists: boolean
+  recommendedContext?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  instance?: LocalAiManagedInstance
+}
+
+export type LocalAiManagedState = {
+  executable: {
+    found: boolean
+    path?: string
+    source?: "configured" | "path-lookup" | "common-location"
+    reason?: string
+  }
+  configuredPath?: string
+  artifacts: Array<LocalAiManagedArtifact>
+}
+
+export type LocalAiGgufRegisterInput = {
+  path: string
+}
+
+export type LocalAiManagedLogs = {
+  lines: Array<{
+    at: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    source: "stdout" | "stderr"
+    line: string
+  }>
+}
+
+export type LocalAiExecutablePathInput = {
+  path?: string
+}
+
 export type McpStatusConnected = {
   status: "connected"
 }
@@ -8896,6 +8958,241 @@ export type LocalaiPreferenceSetResponses = {
 }
 
 export type LocalaiPreferenceSetResponse = LocalaiPreferenceSetResponses[keyof LocalaiPreferenceSetResponses]
+
+export type LocalaiManagedStateData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/managed"
+}
+
+export type LocalaiManagedStateErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiManagedStateError = LocalaiManagedStateErrors[keyof LocalaiManagedStateErrors]
+
+export type LocalaiManagedStateResponses = {
+  /**
+   * Managed llama.cpp ownership state
+   */
+  200: LocalAiManagedState
+}
+
+export type LocalaiManagedStateResponse = LocalaiManagedStateResponses[keyof LocalaiManagedStateResponses]
+
+export type LocalaiManagedRegisterData = {
+  body?: LocalAiGgufRegisterInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/managed/register"
+}
+
+export type LocalaiManagedRegisterErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiManagedRegisterError = LocalaiManagedRegisterErrors[keyof LocalaiManagedRegisterErrors]
+
+export type LocalaiManagedRegisterResponses = {
+  /**
+   * Registered artifact
+   */
+  200: LocalAiManagedArtifact
+}
+
+export type LocalaiManagedRegisterResponse = LocalaiManagedRegisterResponses[keyof LocalaiManagedRegisterResponses]
+
+export type LocalaiManagedRemoveData = {
+  body?: never
+  path: {
+    artifactID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/managed/artifact/{artifactID}"
+}
+
+export type LocalaiManagedRemoveErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiManagedRemoveError = LocalaiManagedRemoveErrors[keyof LocalaiManagedRemoveErrors]
+
+export type LocalaiManagedRemoveResponses = {
+  /**
+   * Removal success
+   */
+  200: boolean
+}
+
+export type LocalaiManagedRemoveResponse = LocalaiManagedRemoveResponses[keyof LocalaiManagedRemoveResponses]
+
+export type LocalaiManagedStartData = {
+  body?: never
+  path: {
+    artifactID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/managed/artifact/{artifactID}/start"
+}
+
+export type LocalaiManagedStartErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiManagedStartError = LocalaiManagedStartErrors[keyof LocalaiManagedStartErrors]
+
+export type LocalaiManagedStartResponses = {
+  /**
+   * Instance state
+   */
+  200: LocalAiManagedInstance
+}
+
+export type LocalaiManagedStartResponse = LocalaiManagedStartResponses[keyof LocalaiManagedStartResponses]
+
+export type LocalaiManagedStopData = {
+  body?: never
+  path: {
+    instanceID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/managed/instance/{instanceID}/stop"
+}
+
+export type LocalaiManagedStopErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiManagedStopError = LocalaiManagedStopErrors[keyof LocalaiManagedStopErrors]
+
+export type LocalaiManagedStopResponses = {
+  /**
+   * Instance state
+   */
+  200: LocalAiManagedInstance
+}
+
+export type LocalaiManagedStopResponse = LocalaiManagedStopResponses[keyof LocalaiManagedStopResponses]
+
+export type LocalaiManagedRestartData = {
+  body?: never
+  path: {
+    instanceID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/managed/instance/{instanceID}/restart"
+}
+
+export type LocalaiManagedRestartErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiManagedRestartError = LocalaiManagedRestartErrors[keyof LocalaiManagedRestartErrors]
+
+export type LocalaiManagedRestartResponses = {
+  /**
+   * Instance state
+   */
+  200: LocalAiManagedInstance
+}
+
+export type LocalaiManagedRestartResponse = LocalaiManagedRestartResponses[keyof LocalaiManagedRestartResponses]
+
+export type LocalaiManagedLogsData = {
+  body?: never
+  path: {
+    instanceID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/managed/instance/{instanceID}/logs"
+}
+
+export type LocalaiManagedLogsErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiManagedLogsError = LocalaiManagedLogsErrors[keyof LocalaiManagedLogsErrors]
+
+export type LocalaiManagedLogsResponses = {
+  /**
+   * Recent process logs
+   */
+  200: LocalAiManagedLogs
+}
+
+export type LocalaiManagedLogsResponse = LocalaiManagedLogsResponses[keyof LocalaiManagedLogsResponses]
+
+export type LocalaiManagedExecutableData = {
+  body?: LocalAiExecutablePathInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/managed/executable"
+}
+
+export type LocalaiManagedExecutableErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiManagedExecutableError = LocalaiManagedExecutableErrors[keyof LocalaiManagedExecutableErrors]
+
+export type LocalaiManagedExecutableResponses = {
+  /**
+   * Updated managed state
+   */
+  200: LocalAiManagedState
+}
+
+export type LocalaiManagedExecutableResponse =
+  LocalaiManagedExecutableResponses[keyof LocalaiManagedExecutableResponses]
 
 export type McpStatusData = {
   body?: never

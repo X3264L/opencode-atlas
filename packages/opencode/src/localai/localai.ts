@@ -23,6 +23,12 @@ import {
 } from "./runtime-choice"
 import type { ModelVariant } from "./catalog"
 import type { ReadinessResult } from "./readiness"
+import { memoryBudgets, planContext } from "./memory-model"
+import { effectiveVramBytes } from "./hardware"
+import { createLlamaCppAdapter } from "./runtime/llamacpp"
+import { listOpenAICompatModels } from "./runtime/openai-compat"
+import { getManagedLlamaCppManager, type ManagedRuntimeInstance } from "./process-manager"
+import { registerGgufArtifact, checkArtifactFile, type ManagedGgufArtifact } from "./gguf"
 import { checkDiskSpace, resolveOllamaModelsDir } from "./disk"
 
 const HARDWARE_CACHE_TTL_MS = 5 * 60_000
@@ -88,6 +94,30 @@ type ReadinessAdapter = LocalRuntimeAdapter & {
   probeReadiness?(modelID: string, options?: { signal?: AbortSignal }): Promise<ReadinessResult>
 }
 
+export interface ManagedArtifactView {
+  artifact: ManagedGgufArtifact
+  fileExists: boolean
+  instance?: ManagedRuntimeInstance
+  recommendedContext?: number
+}
+
+export interface ManagedRuntimeView {
+  executable: {
+    found: boolean
+    path?: string
+    source?: "configured" | "path-lookup" | "common-location"
+    reason?: string
+  }
+  configuredPath?: string
+  artifacts: ManagedArtifactView[]
+}
+
+export interface ManagedLogLine {
+  at: number
+  source: "stdout" | "stderr"
+  line: string
+}
+
 export interface Interface {
   readonly hardware: (options?: { refresh?: boolean }) => Effect.Effect<HardwareProfile>
   readonly state: (preset?: RecommendationPreset) => Effect.Effect<LocalAiState>
@@ -98,6 +128,16 @@ export interface Interface {
   readonly job: (jobID: string) => Effect.Effect<InstallJob | undefined>
   readonly cancel: (jobID: string) => Effect.Effect<boolean>
   readonly setPreference: (input: { runtime: RuntimePreference }) => Effect.Effect<RuntimePreference, InstallError>
+  /** Snapshot of managed llama.cpp ownership state */
+  readonly managedState: () => Effect.Effect<ManagedRuntimeView, InstallError>
+  /** Registers a user-owned GGUF file by reference - never copies it */
+  readonly registerManagedArtifact: (input: { path: string }) => Effect.Effect<ManagedArtifactView, InstallError>
+  readonly removeManagedArtifact: (input: { artifactID: string }) => Effect.Effect<boolean, InstallError>
+  readonly setLlamaServerExecutable: (input: { path?: string }) => Effect.Effect<void, InstallError>
+  readonly startManaged: (input: { artifactID: string }) => Effect.Effect<ManagedRuntimeInstance, InstallError>
+  readonly stopManaged: (input: { instanceID: string }) => Effect.Effect<ManagedRuntimeInstance, InstallError>
+  readonly restartManaged: (input: { instanceID: string }) => Effect.Effect<ManagedRuntimeInstance, InstallError>
+  readonly managedLogs: (input: { instanceID: string }) => Effect.Effect<{ lines: ManagedLogLine[] }>
 }
 
 export class InstallError extends Error {}
@@ -141,6 +181,21 @@ export const layer = Layer.effect(
     let cachedHardware: HardwareProfile | undefined
     let cachedAt = 0
     const jobs = new Map<string, JobExecution>()
+    const manager = getManagedLlamaCppManager()
+    yield* Effect.promise(() => manager.initialize())
+
+    // Normal termination cleans up owned llama-server children. Best-effort:
+    // async stop on signals, synchronous kill as the exit-event last resort.
+    const cleanup = () => manager.disposeSync()
+    process.once("SIGINT", () => {
+      cleanup()
+      process.exit(130)
+    })
+    process.once("SIGTERM", () => {
+      cleanup()
+      process.exit(143)
+    })
+    process.once("exit", cleanup)
 
     interface JobExecution {
       info: InstallJob
@@ -208,7 +263,36 @@ export const layer = Layer.effect(
           }
         }),
       )
-      return Object.fromEntries(entries.filter((entry): entry is [string, LocalInstalledModel[]] => entry !== undefined))
+      const results = Object.fromEntries(entries.filter((entry): entry is [string, LocalInstalledModel[]] => entry !== undefined))
+
+      // Healthy managed llama.cpp instances participate as normal llamacpp
+      // model sources - downstream layers stay runtime-agnostic.
+      const managedModels: LocalInstalledModel[] = []
+      for (const instance of manager.listInstances()) {
+        if (instance.state !== "running" || !instance.endpoint) continue
+        try {
+          const models = await listOpenAICompatModels(fetch, instance.endpoint)
+          for (const model of models) {
+            if (!managedModels.some((entry) => entry.id === model.id)) managedModels.push(model)
+          }
+        } catch {}
+      }
+      if (managedModels.length > 0) {
+        results["llamacpp"] = [...(results["llamacpp"] ?? []), ...managedModels]
+      }
+      return results
+    }
+
+    /** Finds a running managed llama.cpp instance actually serving modelID */
+    async function findManagedEndpointFor(modelID: string): Promise<string | undefined> {
+      for (const instance of manager.listInstances()) {
+        if (instance.state !== "running" || !instance.endpoint) continue
+        try {
+          const models = await listOpenAICompatModels(fetch, instance.endpoint)
+          if (models.some((model) => model.id === modelID)) return instance.endpoint
+        } catch {}
+      }
+      return undefined
     }
 
     const hardware = Effect.fn("LocalAI.hardware")(function* (options?: { refresh?: boolean }) {
@@ -414,11 +498,26 @@ export const layer = Layer.effect(
     })
 
     // Benchmarks/readiness target one runtime explicitly or default to the
-    // first capable runtime.
-    function resolveTargetRuntime(runtimeID: string | undefined, capability: "benchmarkModel" | "probeReadiness") {
+    // first capable runtime. A running managed llama.cpp instance serving the
+    // model takes priority over external/default endpoints.
+    async function resolveTargetRuntime(
+      runtimeID: string | undefined,
+      capability: "benchmarkModel" | "probeReadiness",
+      modelID: string,
+    ): Promise<LocalRuntimeAdapter | undefined> {
       const adapters = createAllCached()
-      if (runtimeID) {
+      if (runtimeID && runtimeID !== "llamacpp") {
         return adapters.find((adapter) => adapter.id === runtimeID && adapter[capability])
+      }
+      if (runtimeID === "llamacpp" || runtimeID === undefined) {
+        const managedEndpoint = await findManagedEndpointFor(modelID)
+        if (managedEndpoint) {
+          const adapter = createLlamaCppAdapter({ endpoint: managedEndpoint })
+          return adapter[capability] ? adapter : undefined
+        }
+        if (runtimeID === "llamacpp") {
+          return adapters.find((adapter) => adapter.id === "llamacpp" && adapter[capability])
+        }
       }
       return adapters.find((adapter) => adapter[capability] !== undefined)
     }
@@ -437,7 +536,7 @@ export const layer = Layer.effect(
     }
 
     const startBenchmark = Effect.fn("LocalAI.startBenchmark")(function* (input: { modelID: string; runtimeID?: string }) {
-      const adapter = resolveTargetRuntime(input.runtimeID, "benchmarkModel")
+      const adapter = yield* Effect.promise(() => resolveTargetRuntime(input.runtimeID, "benchmarkModel", input.modelID))
       if (!adapter?.benchmarkModel) return yield* Effect.fail(new InstallError(`No benchmark-capable runtime${input.runtimeID ? `: ${input.runtimeID}` : ""}`))
       const detection = yield* Effect.promise(() => adapter.detect())
       if (!detection.available) {
@@ -460,7 +559,9 @@ export const layer = Layer.effect(
     })
 
     const startReadiness = Effect.fn("LocalAI.startReadiness")(function* (input: { modelID: string; runtimeID?: string }) {
-      const adapter = resolveTargetRuntime(input.runtimeID, "probeReadiness") as ReadinessAdapter | undefined
+      const adapter = (yield* Effect.promise(() =>
+        resolveTargetRuntime(input.runtimeID, "probeReadiness", input.modelID),
+      )) as ReadinessAdapter | undefined
       if (!adapter?.probeReadiness) return yield* Effect.fail(new InstallError(`No readiness-capable runtime${input.runtimeID ? `: ${input.runtimeID}` : ""}`))
       const detection = yield* Effect.promise(() => adapter.detect())
       if (!detection.available) {
@@ -514,6 +615,114 @@ export const layer = Layer.effect(
       return input.runtime
     })
 
+    // ---- Atlas-managed llama.cpp ownership --------------------------------
+
+    /** Hardware-recommended launch values for a GGUF (catalog-matched when possible) */
+    function recommendedLaunch(artifact: ManagedGgufArtifact): { contextSize?: number; gpuLayers?: number } {
+      const profile = artifact.modelID ? findCatalogProfile(artifact.modelID) : undefined
+      const gpuLayers = effectiveVramBytes(cachedHardware!) === 0 ? 0 : undefined
+      if (!profile) return { contextSize: 8192, ...(gpuLayers !== undefined ? { gpuLayers } : {}) }
+      const variant = findCatalogVariant(profile, artifact.variantID)
+      const budget = memoryBudgets(cachedHardware!)
+      const plan = planContext({ profile, variant, parameterCount: profile.parameterCount, budget })
+      return { contextSize: plan.recommended, ...(gpuLayers !== undefined ? { gpuLayers } : {}) }
+    }
+
+    async function buildManagedView(): Promise<ManagedRuntimeView> {
+      const resolution = await manager.resolveExecutable()
+      const views: ManagedArtifactView[] = []
+      for (const artifact of manager.getArtifacts()) {
+        const fileStatus = await checkArtifactFile(artifact)
+        const instance = manager.runningInstanceForArtifact(artifact.id)
+        views.push({
+          artifact,
+          fileExists: fileStatus.exists,
+          ...(instance ? { instance } : {}),
+          ...(artifact.modelID ? { recommendedContext: recommendedLaunch(artifact).contextSize } : {}),
+        })
+      }
+      return {
+        executable:
+          resolution.found
+            ? { found: true, path: resolution.path, source: resolution.source }
+            : { found: false, reason: resolution.reason },
+        ...(manager.getLlamaServerPath() ? { configuredPath: manager.getLlamaServerPath() } : {}),
+        artifacts: views,
+      }
+    }
+
+    const managedState = Effect.fn("LocalAI.managedState")(function* () {
+      return yield* Effect.promise(buildManagedView)
+    })
+
+    const registerManagedArtifact = Effect.fn("LocalAI.registerManagedArtifact")(function* (input: { path: string }) {
+      const result = yield* Effect.promise(() => registerGgufArtifact(input.path))
+      if (!result.ok || !result.artifact) {
+        return yield* Effect.fail(new InstallError(result.error ?? "Invalid GGUF file"))
+      }
+      yield* Effect.promise(() => manager.addArtifact(result.artifact!))
+      const view = (yield* Effect.promise(buildManagedView)).artifacts.find(
+        (entry) => entry.artifact.id === result.artifact!.id,
+      )
+      if (!view) return yield* Effect.fail(new InstallError("Registration failed"))
+      return view
+    })
+
+    const removeManagedArtifact = Effect.fn("LocalAI.removeManagedArtifact")(function* (input: { artifactID: string }) {
+      const result = yield* Effect.promise(() => manager.removeArtifact(input.artifactID))
+      if (!result.ok) return yield* Effect.fail(new InstallError(result.error ?? "Failed to remove registration"))
+      return true
+    })
+
+    const setLlamaServerExecutable = Effect.fn("LocalAI.setLlamaServerExecutable")(function* (input: { path?: string }) {
+      if (input.path !== undefined && input.path.trim() === "") {
+        return yield* Effect.fail(new InstallError("Executable path cannot be empty"))
+      }
+      manager.setLlamaServerPath(input.path)
+    })
+
+    const startManaged = Effect.fn("LocalAI.startManaged")(function* (input: { artifactID: string }) {
+      const artifact = manager.getArtifacts().find((entry) => entry.id === input.artifactID)
+      if (!artifact) return yield* Effect.fail(new InstallError("Unknown artifact"))
+      const launch = recommendedLaunch(artifact)
+      try {
+        return yield* Effect.promise(() => manager.start(input.artifactID, launch))
+      } catch (error) {
+        return yield* Effect.fail(
+          new InstallError(error instanceof Error ? error.message : "Failed to start llama-server"),
+        )
+      }
+    })
+
+    const stopManaged = Effect.fn("LocalAI.stopManaged")(function* (input: { instanceID: string }) {
+      try {
+        return yield* Effect.promise(() => manager.stop(input.instanceID, "cancelled by user"))
+      } catch (error) {
+        return yield* Effect.fail(
+          new InstallError(error instanceof Error ? error.message : "Failed to stop instance"),
+        )
+      }
+    })
+
+    const restartManaged = Effect.fn("LocalAI.restartManaged")(function* (input: { instanceID: string }) {
+      try {
+        return yield* Effect.promise(() => manager.restart(input.instanceID))
+      } catch (error) {
+        return yield* Effect.fail(
+          new InstallError(error instanceof Error ? error.message : "Failed to restart instance"),
+        )
+      }
+    })
+
+    const managedLogs = Effect.fn("LocalAI.managedLogs")(function* (input: { instanceID: string }) {
+      const lines: ManagedLogLine[] = manager.logsFor(input.instanceID).map((entry) => ({
+        at: entry.at,
+        source: entry.source,
+        line: entry.line,
+      }))
+      return { lines }
+    })
+
     return Service.of({
       hardware,
       state,
@@ -524,6 +733,14 @@ export const layer = Layer.effect(
       job: getJob,
       cancel,
       setPreference,
+      managedState,
+      registerManagedArtifact,
+      removeManagedArtifact,
+      setLlamaServerExecutable,
+      startManaged,
+      stopManaged,
+      restartManaged,
+      managedLogs,
     })
   }),
 )
