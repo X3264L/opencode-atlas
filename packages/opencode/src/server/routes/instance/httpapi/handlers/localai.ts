@@ -2,7 +2,13 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { LocalAI } from "@/localai/localai"
 import { InstanceHttpApi } from "../api"
-import { InstallPayload, LocalAiApiError, ModelPayload, LocalAiStateQuery } from "../groups/localai"
+import {
+  InstallPayload,
+  LocalAiApiError,
+  ModelPayload,
+  LocalAiStateQuery,
+  PreferencePayload,
+} from "../groups/localai"
 
 export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", (handlers) =>
   Effect.gen(function* () {
@@ -30,10 +36,20 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
         localai.remove({ modelID: ctx.payload.modelID }).pipe(Effect.mapError(mapError)),
       )
       .handle("benchmark", (ctx: { payload: typeof ModelPayload.Type }) =>
-        localai.startBenchmark({ modelID: ctx.payload.modelID }).pipe(Effect.mapError(mapError)),
+        localai
+          .startBenchmark({
+            modelID: ctx.payload.modelID,
+            ...(ctx.payload.runtimeID ? { runtimeID: ctx.payload.runtimeID } : {}),
+          })
+          .pipe(Effect.mapError(mapError)),
       )
       .handle("readiness", (ctx: { payload: typeof ModelPayload.Type }) =>
-        localai.startReadiness({ modelID: ctx.payload.modelID }).pipe(Effect.mapError(mapError)),
+        localai
+          .startReadiness({
+            modelID: ctx.payload.modelID,
+            ...(ctx.payload.runtimeID ? { runtimeID: ctx.payload.runtimeID } : {}),
+          })
+          .pipe(Effect.mapError(mapError)),
       )
       .handle("job", (ctx: { params: { jobID: string } }) =>
         Effect.gen(function* () {
@@ -47,5 +63,8 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
         }),
       )
       .handle("jobCancel", (ctx: { params: { jobID: string } }) => localai.cancel(ctx.params.jobID))
+      .handle("preference", (ctx: { payload: typeof PreferencePayload.Type }) =>
+        localai.setPreference({ runtime: ctx.payload.runtime }).pipe(Effect.mapError(mapError)),
+      )
   }),
 )

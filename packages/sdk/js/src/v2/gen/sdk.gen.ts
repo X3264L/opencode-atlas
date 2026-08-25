@@ -100,6 +100,9 @@ import type {
   LocalaiJobGetErrors,
   LocalaiJobGetResponses,
   LocalAiModelInput,
+  LocalAiPreferenceInput,
+  LocalaiPreferenceSetErrors,
+  LocalaiPreferenceSetResponses,
   LocalaiReadinessErrors,
   LocalaiReadinessResponses,
   LocalaiRemoveErrors,
@@ -2334,6 +2337,49 @@ export class Job extends HeyApiClient {
   }
 }
 
+export class Preference extends HeyApiClient {
+  /**
+   * Set preferred local runtime
+   *
+   * Store the user's runtime preference. 'auto' lets Atlas choose based on measured evidence; a specific runtime is honored whenever it can serve the model.
+   */
+  public set<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      localAiPreferenceInput?: LocalAiPreferenceInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "localAiPreferenceInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      LocalaiPreferenceSetResponses,
+      LocalaiPreferenceSetErrors,
+      ThrowOnError
+    >({
+      url: "/localai/preference",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Localai extends HeyApiClient {
   /**
    * Get local AI state
@@ -2518,6 +2564,11 @@ export class Localai extends HeyApiClient {
   private _job?: Job
   get job(): Job {
     return (this._job ??= new Job({ client: this.client }))
+  }
+
+  private _preference?: Preference
+  get preference(): Preference {
+    return (this._preference ??= new Preference({ client: this.client }))
   }
 }
 

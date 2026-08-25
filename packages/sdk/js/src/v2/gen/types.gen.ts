@@ -2406,12 +2406,35 @@ export type LocalAiHardwareProfile = {
   gpus: Array<LocalAiGpuProfile>
 }
 
-export type LocalAiRuntimeDetection = {
+export type LocalAiRuntimeCapabilities = {
+  discovery: boolean
+  modelListing: boolean
+  modelInstall: boolean
+  modelRemoval: boolean
+  streaming: boolean
+  toolCalling: boolean
+  structuredOutput: boolean
+  embeddings?: boolean
+  vision?: boolean
+  benchmark: boolean
+  cancellation: boolean
+  externalModelFiles?: boolean
+}
+
+export type LocalAiRuntimeHealth = {
+  state: "available" | "unavailable" | "degraded" | "unsupported"
+  detail?: string
+}
+
+export type LocalAiRuntimeStatus = {
   id: string
   name: string
   available: boolean
   detail?: string
   endpoint?: string
+  capabilities: LocalAiRuntimeCapabilities
+  health: LocalAiRuntimeHealth
+  modelCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type LocalAiInstalledModel = {
@@ -2463,6 +2486,15 @@ export type LocalAiVariantEvaluation = {
   metricSource: "estimated" | "measured"
 }
 
+export type LocalAiRuntimeChoice = {
+  id: string
+  source: "measured" | "preference" | "heuristic" | "none"
+  reasons: Array<{
+    kind: "positive" | "caveat"
+    text: string
+  }>
+}
+
 export type LocalAiRecommendation = {
   model: {
     id: string
@@ -2504,6 +2536,7 @@ export type LocalAiRecommendation = {
   installed?: boolean
   alternatives: Array<LocalAiVariantEvaluation>
   readinessScore?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  runtime?: LocalAiRuntimeChoice
 }
 
 export type LocalAiBenchmark = {
@@ -2518,21 +2551,42 @@ export type LocalAiBenchmark = {
 export type LocalAiReadinessSummary = {
   score: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   testedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  toolCalling?: boolean
+}
+
+export type LocalAiModelInstanceRef = {
+  runtimeID: string
+  runtimeModelID: string
+  quantization?: string
+}
+
+export type LocalAiNormalizedModelGroup = {
+  key: string
+  modelID?: string
+  variantID?: string
+  label: string
+  instances: Array<LocalAiModelInstanceRef>
 }
 
 export type LocalAiState = {
   hardware: LocalAiHardwareProfile
-  runtimes: Array<LocalAiRuntimeDetection>
+  runtimes: Array<LocalAiRuntimeStatus>
   installed: {
     [key: string]: Array<LocalAiInstalledModel>
   }
   recommendations: Array<LocalAiRecommendation>
   benchmarks: {
-    [key: string]: LocalAiBenchmark
+    [key: string]: {
+      [key: string]: LocalAiBenchmark
+    }
   }
   readiness: {
-    [key: string]: LocalAiReadinessSummary
+    [key: string]: {
+      [key: string]: LocalAiReadinessSummary
+    }
   }
+  preference: "auto" | "ollama" | "lmstudio" | "llamacpp" | "mlx"
+  normalized: Array<LocalAiNormalizedModelGroup>
 }
 
 export type LocalAiError = {
@@ -2550,6 +2604,7 @@ export type LocalAiJob = {
   kind: "install" | "benchmark" | "readiness"
   modelID?: string
   runtimeTag?: string
+  runtimeID?: string
   state: "running" | "done" | "error" | "cancelled"
   status?: string
   percent?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
@@ -2560,6 +2615,11 @@ export type LocalAiJob = {
 
 export type LocalAiModelInput = {
   modelID: string
+  runtimeID?: "ollama" | "lmstudio" | "llamacpp" | "mlx"
+}
+
+export type LocalAiPreferenceInput = {
+  runtime: "auto" | "ollama" | "lmstudio" | "llamacpp" | "mlx"
 }
 
 export type McpStatusConnected = {
@@ -8808,6 +8868,34 @@ export type LocalaiJobCancelResponses = {
 }
 
 export type LocalaiJobCancelResponse = LocalaiJobCancelResponses[keyof LocalaiJobCancelResponses]
+
+export type LocalaiPreferenceSetData = {
+  body?: LocalAiPreferenceInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/preference"
+}
+
+export type LocalaiPreferenceSetErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiPreferenceSetError = LocalaiPreferenceSetErrors[keyof LocalaiPreferenceSetErrors]
+
+export type LocalaiPreferenceSetResponses = {
+  /**
+   * Stored runtime preference
+   */
+  200: "auto" | "ollama" | "lmstudio" | "llamacpp" | "mlx"
+}
+
+export type LocalaiPreferenceSetResponse = LocalaiPreferenceSetResponses[keyof LocalaiPreferenceSetResponses]
 
 export type McpStatusData = {
   body?: never

@@ -1,58 +1,69 @@
 ---
 title: "Local AI"
-description: "Run OpenCode with models on your own machine through Ollama"
+description: "Run OpenCode with models on your own machine through multiple local runtimes"
 icon: "cpu"
 ---
 
-OpenCode can run coding agents against local models managed through [Ollama](https://ollama.com). Open `/local` in the TUI to see what your machine can run, install recommended quantizations, and switch to a local model.
+OpenCode can run coding agents against local models on your own machine. Open `/local` in the TUI to see which runtimes are running, what your hardware can handle, install recommended quantizations, and switch to a local model.
+
+## Supported runtimes
+
+| Runtime | Discovery | List | Install/Remove | Streaming | Benchmark | Readiness |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ollama | Full | Full | Full (Atlas-managed pull) | Full | Full | Full |
+| LM Studio | Full | Full | External (managed in the LM Studio app) | Full | Full | Where supported |
+| llama.cpp | Server discovery | Full | External (GGUF file required) | Full | Full | Where supported |
+| MLX | Apple Silicon only | Full | External (Hugging Face cache) | Full | Full | Where supported |
+
+Notes:
+
+- **Ollama** is the reference runtime and the only one with full Atlas-managed lifecycle today.
+- **LM Studio**: Atlas detects a running server (default `http://127.0.0.1:1234`, override with `LMSTUDIO_HOST`) and can use every exposed model for inference, benchmarks and readiness. Model downloads stay inside the LM Studio app - Atlas does not fake install buttons.
+- **llama.cpp**: Atlas targets an externally running `llama-server` (default `http://127.0.0.1:8080`, override with `LLAMACPP_HOST`). GGUF filenames are parsed for quantization labels (e.g. `-q6_k`) so identities stay meaningful. Automatic process launching is not part of this release.
+- **MLX**: requires macOS on Apple Silicon; on any other platform it reports "unsupported" and is never probed as a backend. Point it at an MLX server (`MLX_HOST`, default port 8080). Recommendations still use unified-memory awareness from shared hardware detection.
 
 ## How recommendations work
 
-OpenCode detects your hardware (GPU vendor and VRAM, system RAM, Apple unified memory) and scores every catalog model against it. Each model is evaluated per quantization variant (Q4_K_M, Q5_K_M, Q6_K, Q8_0 where the registry publishes them), and the best-scoring variant is highlighted as **★ Best for your PC**.
+OpenCode detects your hardware (GPU vendor and VRAM, system RAM, Apple unified memory) and scores every catalog model against it per quantization variant. The final hierarchy is:
 
-Scoring combines:
+```text
+hardware → model → quantization/context → runtime
+```
 
-- **Fit** - whether the working set fits entirely in GPU memory
-- **Quality** - higher-quality quantizations win when hardware supports them comfortably
-- **Speed** - estimated smoothly from working-set size; every doubling of memory footprint costs a fixed number of points (no artificial thresholds)
-- **Context** - practical context capacity on this machine, not theoretical maximum
-- **Agent readiness** - measured OpenCode tool-calling performance when available
+Scoring combines fit, quality, speed (smoothly estimated from working-set size), practical context capacity, and agent readiness. Presets (`overall`, `coding`, `agent`, `speed`, `memory`, `context`) reweight these factors.
 
-Presets (`overall`, `coding`, `agent`, `speed`, `memory`, `context`) reweight these factors.
+## Runtime selection
+
+When a model is available through several runtimes, Atlas picks one:
+
+- Your explicit preference (`Auto / Ollama / LM Studio / llama.cpp / MLX`, set in `/local`) wins whenever that runtime can actually serve the model.
+- Otherwise **measured evidence decides**: real benchmark throughput and readiness results recorded per runtime.
+- With no measurements anywhere, a transparent heuristic applies (install state + lifecycle completeness) and the UI says so - Atlas never invents speed numbers or hardcodes a runtime ranking.
+
+## Model identity
+
+The same logical model may exist on several runtimes. Atlas groups instances into logical identities using strict rules: matching quantization label, parameter count within 15%, and a shared family token. Uncertain matches are displayed separately instead of being merged. Benchmark and readiness records are stored per `[runtime][model artifact]`, so Qwen/Q6/Ollama and Qwen/Q6/llama.cpp never collide.
 
 ## Working set estimates
 
-The recommended context for each variant is the largest standard context step whose full working set (weights + KV cache + runtime overhead) fits inside the GPU budget minus a 12% safety reserve. Headroom shown in the UI is what remains at that context. These are conservative estimates; they are always labeled as estimated.
+The recommended context for each variant is the largest standard context step whose full working set (weights + KV cache + runtime overhead) fits inside the GPU budget minus a 12% safety reserve. These are conservative estimates, always labeled as estimated.
 
 ## Offload
 
-When a working set exceeds safe VRAM, part runs in system memory:
-
-| Offload level | Meaning |
-| --- | --- |
-| None | Fully GPU-resident |
-| Partial | Up to 25% offloaded; noticeably slower |
-| Heavy | Most layers offloaded; much slower |
-| CPU dominant | No usable GPU detected |
-
-Offloaded configurations are penalized heavily so a smaller model that fits usually outranks a larger one that spills.
+When a working set exceeds safe VRAM, part runs in system memory (none → partial → heavy → CPU dominant). Offloaded configurations are penalized heavily so a smaller model that fits usually outranks a larger one that spills.
 
 ## Estimated vs measured
 
-Recommendations start from size-based estimates. After you run **Benchmark** on an installed model, real throughput measured on this machine replaces the estimate for that exact runtime tag (runtime + model + quantization). Slow measured performance lowers a recommendation; fast measurements raise it. Benchmarks are stored per variant - measuring Q4 does not affect Q6 or Q8 evaluations.
+Recommendations start from size-based estimates. Running **Benchmark** records real throughput against the exact runtime + model + quantization and replaces the estimate for that instance. Cross-runtime comparisons in `/local` show only measured values - unbenchmarked runtimes read "Not benchmarked".
 
-**Readiness** measures how well a model handles OpenCode agent tool calls and strongly influences agent-preset recommendations.
+## Downloads and cancellation
 
-## Variants
-
-Each catalog model lists its installable variants. The default variant uses the model's primary Ollama tag; other quants use Ollama's `-q6_K` / `-q8_0` suffix convention. Only variants listed in the UI are offered. If the registry does not publish a tag, the pull fails with Ollama's own error - nothing pretends to be installed that isn't.
-
-## Downloads
-
-Before installing, OpenCode checks free disk space on the Ollama models directory (honoring `OLLAMA_MODELS`). If space cannot be determined, the check is skipped rather than blocking you. Downloads stream progress into the TUI and can be cancelled mid-flight; cancelled jobs stop promptly and can be restarted anytime.
+Before installing, OpenCode checks free disk space on the Ollama models directory (honoring `OLLAMA_MODELS`); if space cannot be determined the check is skipped rather than blocking you. Downloads stream progress into the TUI and can be cancelled mid-flight.
 
 ## Current limitations
 
-- Install, benchmark, readiness, and cancellation require Ollama. LM Studio models are listed but not managed.
-- Variant availability depends on what the Ollama registry publishes for each model.
+- Install/remove require Ollama; other runtimes manage their own model files.
+- llama.cpp support targets an already-running external server; no automatic process management yet.
+- GGUF import by file picker is not implemented; llama.cpp models are discovered through the server's own listing.
+- MLX integration assumes an OpenAI-compatible MLX server is already running.
 - All pre-install numbers are estimates derived from parameter counts and public quantization profiles; only benchmark/readiness results are measured.

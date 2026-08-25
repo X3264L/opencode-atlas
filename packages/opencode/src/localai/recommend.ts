@@ -71,6 +71,13 @@ export interface VariantEvaluation {
   metricSource: MetricSource
 }
 
+/** Evidence-backed runtime selection for this model+variant */
+export interface RuntimeChoiceSummary {
+  id: string
+  source: "measured" | "preference" | "heuristic" | "none"
+  reasons: { kind: "positive" | "caveat"; text: string }[]
+}
+
 export interface ModelRecommendation {
   model: LocalModelProfile
   /** The best variant for this machine */
@@ -94,6 +101,9 @@ export interface ModelRecommendation {
 
   /** Locally measured OpenCode agent readiness score (0-100) if tested */
   readinessScore?: number
+
+  /** Which runtime should serve this model, when one can */
+  runtime?: RuntimeChoiceSummary
 }
 
 function classifyOffload(requiredBytes: number, budget: MemoryBudget): OffloadLevel {

@@ -4,8 +4,12 @@ import type {
   LocalRuntimeAdapter,
   ModelBenchmark,
   ModelRuntimeInfo,
+  RuntimeCapabilities,
   RuntimeDetectionResult,
+  RuntimeHealth,
 } from "../runtime-types"
+import type { ReadinessResult } from "../readiness"
+import { runReadinessTest } from "../readiness"
 
 export const OLLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 
@@ -81,8 +85,14 @@ function contextLengthFromShow(show: OllamaShowResponse): number | undefined {
   return undefined
 }
 
-export function createOllamaAdapter(options?: { endpoint?: string; fetch?: FetchLike }): LocalRuntimeAdapter {
-  const endpoint = options?.endpoint ?? resolveOllamaEndpoint()
+export function createOllamaAdapter(options?: {
+  endpoint?: string
+  env?: Record<string, string | undefined>
+  fetch?: FetchLike
+}): LocalRuntimeAdapter & {
+  probeReadiness(modelID: string, options?: { signal?: AbortSignal }): Promise<ReadinessResult>
+} {
+  const endpoint = options?.endpoint ?? resolveOllamaEndpoint(options?.env)
   const doFetch = options?.fetch ?? fetch
 
   // `null` disables the idle timeout entirely - used for streaming endpoints
@@ -145,6 +155,19 @@ export function createOllamaAdapter(options?: { endpoint?: string; fetch?: Fetch
     name: "Ollama",
     endpoint,
 
+    // Ollama is the reference implementation: full lifecycle support.
+    capabilities: {
+      discovery: true,
+      modelListing: true,
+      modelInstall: true,
+      modelRemoval: true,
+      streaming: true,
+      toolCalling: true,
+      structuredOutput: true,
+      benchmark: true,
+      cancellation: true,
+    } satisfies RuntimeCapabilities,
+
     async detect(): Promise<RuntimeDetectionResult> {
       try {
         const version = await json<{ version?: string }>("/api/version", {}, 2_000)
@@ -163,6 +186,15 @@ export function createOllamaAdapter(options?: { endpoint?: string; fetch?: Fetch
           endpoint,
           detail: error instanceof Error && error.name === "TimeoutError" ? "timed out" : "not running",
         }
+      }
+    },
+
+    async health(): Promise<RuntimeHealth> {
+      try {
+        const version = await json<{ version?: string }>("/api/version", {}, 2_000)
+        return { state: "available", ...(version.version ? { detail: `v${version.version}` } : {}) }
+      } catch {
+        return { state: "unavailable", detail: "not running" }
       }
     },
 
@@ -224,6 +256,12 @@ export function createOllamaAdapter(options?: { endpoint?: string; fetch?: Fetch
     async removeModel(id: string): Promise<void> {
       const res = await request("/api/delete", { method: "DELETE", body: JSON.stringify({ model: id }) }, 30_000)
       if (!res.ok) throw new Error(`Failed to remove ${id}: HTTP ${res.status}`)
+    },
+
+    // Uses Ollama's native chat API - the readiness probe relies on native
+    // options/format fields the OpenAI-compatible route does not expose.
+    probeReadiness(modelID: string): Promise<ReadinessResult> {
+      return runReadinessTest(modelID, { endpoint })
     },
 
     async benchmarkModel(id: string, benchmarkOptions?): Promise<ModelBenchmark> {

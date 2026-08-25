@@ -38,6 +38,55 @@ const RuntimeDetection = Schema.Struct({
   endpoint: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "LocalAiRuntimeDetection" })
 
+const RuntimeCapabilities = Schema.Struct({
+  discovery: Schema.Boolean,
+  modelListing: Schema.Boolean,
+  modelInstall: Schema.Boolean,
+  modelRemoval: Schema.Boolean,
+  streaming: Schema.Boolean,
+  toolCalling: Schema.Boolean,
+  structuredOutput: Schema.Boolean,
+  embeddings: Schema.optionalKey(Schema.Boolean),
+  vision: Schema.optionalKey(Schema.Boolean),
+  benchmark: Schema.Boolean,
+  cancellation: Schema.Boolean,
+  externalModelFiles: Schema.optionalKey(Schema.Boolean),
+}).annotate({ identifier: "LocalAiRuntimeCapabilities" })
+
+const RuntimeHealth = Schema.Struct({
+  state: Schema.Literals(["available", "unavailable", "degraded", "unsupported"]),
+  detail: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "LocalAiRuntimeHealth" })
+
+const RuntimeStatus = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  available: Schema.Boolean,
+  detail: Schema.optionalKey(Schema.String),
+  endpoint: Schema.optionalKey(Schema.String),
+  capabilities: RuntimeCapabilities,
+  health: RuntimeHealth,
+  modelCount: Schema.Number,
+}).annotate({ identifier: "LocalAiRuntimeStatus" })
+
+/** One runnable model on one concrete runtime */
+const ModelInstanceRef = Schema.Struct({
+  runtimeID: Schema.String,
+  runtimeModelID: Schema.String,
+  quantization: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "LocalAiModelInstanceRef" })
+
+/** Logical model grouped across runtimes; uncertain identities stay separate */
+const NormalizedModelGroup = Schema.Struct({
+  key: Schema.String,
+  modelID: Schema.optionalKey(Schema.String),
+  variantID: Schema.optionalKey(Schema.String),
+  label: Schema.String,
+  instances: Schema.Array(ModelInstanceRef),
+}).annotate({ identifier: "LocalAiNormalizedModelGroup" })
+
+export const RUNTIME_IDS = ["auto", "ollama", "lmstudio", "llamacpp", "mlx"] as const
+
 const InstalledModel = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -116,6 +165,15 @@ const Recommendation = Schema.Struct({
   installed: Schema.optionalKey(Schema.Boolean),
   alternatives: Schema.Array(VariantEvaluation),
   readinessScore: Schema.optionalKey(Schema.Number),
+  runtime: Schema.optionalKey(
+    Schema.Struct({
+      id: Schema.String,
+      source: Schema.Literals(["measured", "preference", "heuristic", "none"]),
+      reasons: Schema.Array(
+        Schema.Struct({ kind: Schema.Literals(["positive", "caveat"]), text: Schema.String }),
+      ),
+    }).annotate({ identifier: "LocalAiRuntimeChoice" }),
+  ),
 }).annotate({ identifier: "LocalAiRecommendation" })
 
 const BenchmarkInfo = Schema.Struct({
@@ -130,15 +188,19 @@ const BenchmarkInfo = Schema.Struct({
 const ReadinessSummary = Schema.Struct({
   score: Schema.Number,
   testedAt: Schema.Number,
+  toolCalling: Schema.optionalKey(Schema.Boolean),
 }).annotate({ identifier: "LocalAiReadinessSummary" })
 
 export const LocalAiStateResponse = Schema.Struct({
   hardware: HardwareProfile,
-  runtimes: Schema.Array(RuntimeDetection),
+  runtimes: Schema.Array(RuntimeStatus),
   installed: Schema.Record(Schema.String, Schema.Array(InstalledModel)),
   recommendations: Schema.Array(Recommendation),
-  benchmarks: Schema.Record(Schema.String, BenchmarkInfo),
-  readiness: Schema.Record(Schema.String, ReadinessSummary),
+  /** Benchmark results keyed [runtimeID][runtimeModelID] */
+  benchmarks: Schema.Record(Schema.String, Schema.Record(Schema.String, BenchmarkInfo)),
+  readiness: Schema.Record(Schema.String, Schema.Record(Schema.String, ReadinessSummary)),
+  preference: Schema.Literals(["auto", "ollama", "lmstudio", "llamacpp", "mlx"]),
+  normalized: Schema.Array(NormalizedModelGroup),
 }).annotate({ identifier: "LocalAiState" })
 
 export const LocalAiStateQuery = Schema.Struct({
@@ -161,13 +223,20 @@ export const InstallPayload = Schema.Struct({
 
 export const ModelPayload = Schema.Struct({
   modelID: Schema.String,
+  /** Target a specific runtime; defaults to the first capable one */
+  runtimeID: Schema.optionalKey(Schema.Literals(["ollama", "lmstudio", "llamacpp", "mlx"])),
 }).annotate({ identifier: "LocalAiModelInput" })
+
+export const PreferencePayload = Schema.Struct({
+  runtime: Schema.Literals(["auto", "ollama", "lmstudio", "llamacpp", "mlx"]),
+}).annotate({ identifier: "LocalAiPreferenceInput" })
 
 export const JobResponse = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(["install", "benchmark", "readiness"]),
   modelID: Schema.optionalKey(Schema.String),
   runtimeTag: Schema.optionalKey(Schema.String),
+  runtimeID: Schema.optionalKey(Schema.String),
   state: Schema.Literals(["running", "done", "error", "cancelled"]),
   status: Schema.optionalKey(Schema.String),
   percent: Schema.optionalKey(Schema.Number),
@@ -184,6 +253,7 @@ export const LocalAiPaths = {
   readiness: "/localai/readiness",
   job: "/localai/job/:jobID",
   jobCancel: "/localai/job/:jobID/cancel",
+  preference: "/localai/preference",
 } as const
 
 export const LocalAiApi = HttpApi.make("localai")
@@ -275,6 +345,19 @@ export const LocalAiApi = HttpApi.make("localai")
             identifier: "localai.job.cancel",
             summary: "Cancel a running job",
             description: "Request cancellation of a running install or benchmark. The job enters the cancelled state.",
+          }),
+        ),
+        HttpApiEndpoint.post("preference", LocalAiPaths.preference, {
+          query: WorkspaceRoutingQuery,
+          payload: PreferencePayload,
+          success: described(Schema.Literals(["auto", "ollama", "lmstudio", "llamacpp", "mlx"]), "Stored runtime preference"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "localai.preference.set",
+            summary: "Set preferred local runtime",
+            description:
+              "Store the user's runtime preference. 'auto' lets Atlas choose based on measured evidence; a specific runtime is honored whenever it can serve the model.",
           }),
         ),
       )

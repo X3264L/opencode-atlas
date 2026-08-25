@@ -10,6 +10,15 @@ import type { LocalAiJob, LocalAiRecommendation, LocalAiState } from "@opencode-
 
 type VariantEvaluation = LocalAiRecommendation["alternatives"][number]
 
+const RUNTIME_NAMES: Record<string, string> = {
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+  llamacpp: "llama.cpp",
+  mlx: "MLX",
+}
+
+const PREFERENCE_CYCLE = ["auto", "ollama", "lmstudio", "llamacpp", "mlx"] as const
+
 type Preset = NonNullable<Parameters<ReturnType<typeof useSDK>["client"]["localai"]["state"]>[0]>["preset"]
 
 // Generated SDK types encode JSON numbers as number | "-Infinity" | "NaN";
@@ -59,6 +68,11 @@ const OFFLOAD_LABEL = {
   cpu_dominant: "Mostly running on CPU",
 } as const
 
+function runtimeStatusIcon(state: string | undefined, available: boolean) {
+  if (state === "unsupported") return "—"
+  return available ? "✓" : "○"
+}
+
 export function DialogLocalAi() {
   const sdk = useSDK()
   const dialog = useDialog()
@@ -84,6 +98,16 @@ export function DialogLocalAi() {
     const next = (presetIndex() + 1) % PRESETS.length
     setPresetIndex(next)
     await load(PRESETS[next].id)
+  }
+
+  const cyclePreference = async () => {
+    const current = state()?.preference ?? "auto"
+    const index = PREFERENCE_CYCLE.indexOf(current as (typeof PREFERENCE_CYCLE)[number])
+    const next = PREFERENCE_CYCLE[(index + 1) % PREFERENCE_CYCLE.length]
+    try {
+      await sdk.client.localai.preference.set({ localAiPreferenceInput: { runtime: next } })
+    } catch {}
+    await load(PRESETS[presetIndex()].id)
   }
 
   const openRecommendation = (recommendation: LocalAiRecommendation) => {
@@ -154,6 +178,23 @@ export function DialogLocalAi() {
       },
     )
 
+    for (const runtime of value.runtimes) {
+      const icon = runtimeStatusIcon(runtime.health?.state, runtime.available)
+      const detail = [
+        runtime.available ? `${runtime.modelCount} model${runtime.modelCount === 1 ? "" : "s"}` : undefined,
+        runtime.detail ?? (runtime.health?.detail && !runtime.available ? runtime.health.detail : undefined),
+      ]
+        .filter(Boolean)
+        .join(" · ")
+      rows.push({
+        title: `${icon} ${runtime.name}`,
+        description: [detail, runtime.endpoint].filter(Boolean).join(" · ") || undefined,
+        category: "Runtimes",
+        value: {},
+        disabled: true,
+      })
+    }
+
     for (const runtime of Object.keys(value.installed)) {
       for (const model of value.installed[runtime]) {
         const params = num(model.parameterCount)
@@ -216,6 +257,12 @@ export function DialogLocalAi() {
               title: `Preset: ${PRESETS[presetIndex()].label}`,
               side: "right",
               onTrigger: cyclePreset,
+            },
+            {
+              command: "local.ai.runtime",
+              title: `Runtime: ${RUNTIME_NAMES[state()?.preference ?? "auto"] ?? state()?.preference ?? "auto"}`,
+              side: "right",
+              onTrigger: () => void cyclePreference(),
             },
             {
               command: "local.ai.refresh",
@@ -314,7 +361,8 @@ function LocalAiModelDetails(props: {
   const useModel = () => {
     const modelTag = tag()
     if (!modelTag) return
-    local.model.set({ providerID: "ollama", modelID: modelTag }, { recent: true })
+    // Provider IDs mirror runtime IDs for local runtimes
+    local.model.set({ providerID: rec().runtime?.id ?? "ollama", modelID: modelTag }, { recent: true })
     dialog.clear()
   }
 
@@ -437,6 +485,51 @@ function LocalAiModelDetails(props: {
         title: "Estimated from model size and your hardware",
         description: "No local benchmark yet - run Benchmark for real numbers",
         category: "Performance",
+        disabled: true,
+      })
+    }
+
+    // Cross-runtime evidence for this exact model+variant
+    const choice = value.runtime
+    if (choice) {
+      push({
+        title: `Runtime: ${RUNTIME_NAMES[choice.id] ?? choice.id}`,
+        description:
+          choice.source === "preference"
+            ? "Your preferred runtime"
+            : choice.source === "measured"
+              ? "Selected by measured benchmarks"
+              : choice.source === "heuristic"
+                ? "Selected without benchmarks yet"
+                : undefined,
+        category: "Runtime",
+        disabled: true,
+      })
+    }
+    const group = props.state?.normalized.find(
+      (entry) => entry.modelID === value.model.id && (!entry.variantID || entry.variantID === value.variant.id),
+    )
+    for (const instance of group?.instances ?? []) {
+      const bench = props.state?.benchmarks?.[instance.runtimeID]?.[instance.runtimeModelID]
+      const readiness = props.state?.readiness?.[instance.runtimeID]?.[instance.runtimeModelID]
+      const parts = [
+        num(bench?.tokensPerSecond) !== undefined ? `${num(bench?.tokensPerSecond)} tok/s` : undefined,
+        num(bench?.timeToFirstTokenMs) !== undefined ? `${num(bench?.timeToFirstTokenMs)}ms TTFT` : undefined,
+        num(readiness?.score) !== undefined ? `readiness ${num(readiness?.score)}` : undefined,
+      ]
+      if (parts.length === 0) continue
+      push({
+        title: RUNTIME_NAMES[instance.runtimeID] ?? instance.runtimeID,
+        description: parts.join(" · "),
+        category: "Cross-runtime benchmarks",
+        disabled: true,
+      })
+    }
+
+    for (const reason of choice?.reasons ?? []) {
+      push({
+        title: `${reason.kind === "positive" ? "✓" : "○"} ${reason.text}`,
+        category: "Why this runtime",
         disabled: true,
       })
     }
