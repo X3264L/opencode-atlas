@@ -90,6 +90,20 @@ import type {
   GlobalUpgradeResponses,
   InstanceDisposeErrors,
   InstanceDisposeResponses,
+  LocalaiBenchmarkErrors,
+  LocalaiBenchmarkResponses,
+  LocalaiInstallErrors,
+  LocalAiInstallInput,
+  LocalaiInstallResponses,
+  LocalaiJobGetErrors,
+  LocalaiJobGetResponses,
+  LocalAiModelInput,
+  LocalaiReadinessErrors,
+  LocalaiReadinessResponses,
+  LocalaiRemoveErrors,
+  LocalaiRemoveResponses,
+  LocalaiStateErrors,
+  LocalaiStateResponses,
   LocationRef,
   LspStatusErrors,
   LspStatusResponses,
@@ -2249,6 +2263,227 @@ export class Formatter extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+}
+
+export class Job extends HeyApiClient {
+  /**
+   * Get job status
+   *
+   * Poll the status of an install, benchmark or readiness job.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      jobID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "jobID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<LocalaiJobGetResponses, LocalaiJobGetErrors, ThrowOnError>({
+      url: "/localai/job/{jobID}",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Localai extends HeyApiClient {
+  /**
+   * Get local AI state
+   *
+   * Detect local hardware and runtimes, list installed models, and get hardware-aware model recommendations.
+   */
+  public state<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      preset?: "overall" | "coding" | "agent" | "speed" | "memory" | "context"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "preset" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<LocalaiStateResponses, LocalaiStateErrors, ThrowOnError>({
+      url: "/localai/state",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Install a recommended model
+   *
+   * Start downloading a catalog model through Ollama. Poll the returned job for progress.
+   */
+  public install<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      localAiInstallInput?: LocalAiInstallInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "localAiInstallInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LocalaiInstallResponses, LocalaiInstallErrors, ThrowOnError>({
+      url: "/localai/install",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Remove an installed model
+   *
+   * Delete a locally installed model from the runtime.
+   */
+  public remove<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      localAiModelInput?: LocalAiModelInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "localAiModelInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LocalaiRemoveResponses, LocalaiRemoveErrors, ThrowOnError>({
+      url: "/localai/remove",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Benchmark an installed model
+   *
+   * Measure real generation speed of an installed local model. Poll the returned job.
+   */
+  public benchmark<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      localAiModelInput?: LocalAiModelInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "localAiModelInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LocalaiBenchmarkResponses, LocalaiBenchmarkErrors, ThrowOnError>({
+      url: "/localai/benchmark",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Run agent readiness test
+   *
+   * Probe chat, streaming, tool calling and structured output support of a local model.
+   */
+  public readiness<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      localAiModelInput?: LocalAiModelInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "localAiModelInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LocalaiReadinessResponses, LocalaiReadinessErrors, ThrowOnError>({
+      url: "/localai/readiness",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  private _job?: Job
+  get job(): Job {
+    return (this._job ??= new Job({ client: this.client }))
   }
 }
 
@@ -7160,6 +7395,11 @@ export class OpencodeClient extends HeyApiClient {
   private _formatter?: Formatter
   get formatter(): Formatter {
     return (this._formatter ??= new Formatter({ client: this.client }))
+  }
+
+  private _localai?: Localai
+  get localai(): Localai {
+    return (this._localai ??= new Localai({ client: this.client }))
   }
 
   private _mcp?: Mcp

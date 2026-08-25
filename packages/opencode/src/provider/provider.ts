@@ -26,6 +26,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { isRecord } from "@/util/record"
 import { optional } from "@opencode-ai/core/schema"
 import { ProviderTransform } from "./transform"
+import { discoverLocalOllamaModels } from "@/localai/discover"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
@@ -1663,6 +1664,58 @@ const layer = Layer.effect(
           })
         }
 
+        // Discover locally installed Ollama models so they appear as a native
+        // provider without manual configuration. Skipped when the user already
+        // configured their own "ollama" provider entry.
+        const ollamaID = ProviderV2.ID.make("ollama")
+        if (!configProviders.some(([id]) => id === "ollama") && isProviderAllowed(ollamaID)) {
+          yield* Effect.promise(async () => {
+            try {
+              const discovered = await discoverLocalOllamaModels()
+              if (!discovered || discovered.models.length === 0) return
+              const models: Record<string, Model> = {}
+              for (const item of discovered.models) {
+                const context =
+                  item.contextLength && item.contextLength > 0 ? Math.min(item.contextLength, 262144) : 8192
+                models[item.id] = {
+                  id: ModelV2.ID.make(item.id),
+                  providerID: ollamaID,
+                  api: { id: item.id, url: `${discovered.endpoint}/v1`, npm: "@ai-sdk/openai-compatible" },
+                  name: prettyOllamaModelName(item.id),
+                  family: item.family ?? "",
+                  capabilities: {
+                    temperature: true,
+                    reasoning: false,
+                    attachment: !!item.vision,
+                    toolcall: item.toolCalling ?? false,
+                    input: { text: true, audio: false, image: !!item.vision, video: false, pdf: false },
+                    output: { text: true, audio: false, image: false, video: false, pdf: false },
+                    interleaved: false,
+                  },
+                  cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+                  limit: { context, output: Math.min(Math.max(2048, Math.floor(context / 4)), 16384) },
+                  status: "active",
+                  options: {},
+                  headers: {},
+                  release_date: "",
+                  variants: {},
+                }
+              }
+              const info: Info = {
+                id: ollamaID,
+                name: "Ollama",
+                source: "custom",
+                env: [],
+                key: "local",
+                options: { baseURL: `${discovered.endpoint}/v1`, apiKey: "local" },
+                models,
+              }
+              database[ollamaID] = JSON.parse(JSON.stringify(info))
+              providers[ollamaID] = info
+            } catch (e) {}
+          })
+        }
+
         for (const [id, provider] of Object.entries(providers)) {
           const providerID = ProviderV2.ID.make(id)
           if (!isProviderAllowed(providerID)) {
@@ -2056,6 +2109,16 @@ export function parseModel(model: string) {
     providerID: ProviderV2.ID.make(providerID),
     modelID: ModelV2.ID.make(rest.join("/")),
   }
+}
+
+function prettyOllamaModelName(tag: string) {
+  const [base, variant] = tag.split(":")
+  const title = base
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((word) => (/^\d/.test(word) ? word : word[0].toUpperCase() + word.slice(1)))
+    .join(" ")
+  return variant ? `${title} (${variant})` : title
 }
 
 export const node = LayerNode.make({

@@ -2382,6 +2382,133 @@ export type FormatterStatus = {
   enabled: boolean
 }
 
+export type LocalAiGpuProfile = {
+  vendor: string
+  model: string
+  vramBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  architecture?: string
+}
+
+export type LocalAiHardwareProfile = {
+  os: {
+    platform: string
+    arch: string
+  }
+  cpu: {
+    model?: string
+    physicalCores?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    logicalCores?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  memory: {
+    totalBytes: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    availableBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  gpus: Array<LocalAiGpuProfile>
+}
+
+export type LocalAiRuntimeDetection = {
+  id: string
+  name: string
+  available: boolean
+  detail?: string
+  endpoint?: string
+}
+
+export type LocalAiInstalledModel = {
+  id: string
+  name: string
+  sizeBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  quantization?: string
+  parameterCount?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  family?: string
+  contextLength?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  toolCalling?: boolean
+  vision?: boolean
+}
+
+export type LocalAiRecommendation = {
+  model: {
+    id: string
+    name: string
+    family?: string
+    parameterCount?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    capabilities: {
+      coding?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      reasoning?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      toolCalling?: boolean
+      vision?: boolean
+      agentCompatible?: boolean
+    }
+    contextLength?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    runtimes: {
+      ollama?: string
+    }
+  }
+  variant: {
+    id: string
+    quantization?: string
+    downloadSizeBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    estimatedMemoryBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  score: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  compatibility: "excellent" | "good" | "usable" | "not_recommended"
+  reasons: Array<string>
+  warnings: Array<string>
+  estimated?: {
+    vramBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    ramBytes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    contextLength?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  installed?: boolean
+}
+
+export type LocalAiBenchmark = {
+  success: boolean
+  error?: string
+  tokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  promptTokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  timeToFirstTokenMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  testedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type LocalAiState = {
+  hardware: LocalAiHardwareProfile
+  runtimes: Array<LocalAiRuntimeDetection>
+  installed: {
+    [key: string]: Array<LocalAiInstalledModel>
+  }
+  recommendations: Array<LocalAiRecommendation>
+  benchmarks: {
+    [key: string]: LocalAiBenchmark
+  }
+}
+
+export type LocalAiError = {
+  name: string
+  message: string
+}
+
+export type LocalAiInstallInput = {
+  profileID: string
+  variantID?: string
+}
+
+export type LocalAiJob = {
+  id: string
+  kind: "install" | "benchmark" | "readiness"
+  modelID?: string
+  state: "running" | "done" | "error"
+  status?: string
+  percent?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  error?: string
+  result?: unknown
+  startedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type LocalAiModelInput = {
+  modelID: string
+}
+
 export type McpStatusConnected = {
   status: "connected"
 }
@@ -8427,6 +8554,177 @@ export type FormatterStatusResponses = {
 }
 
 export type FormatterStatusResponse = FormatterStatusResponses[keyof FormatterStatusResponses]
+
+export type LocalaiStateData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    preset?: "overall" | "coding" | "agent" | "speed" | "memory" | "context"
+  }
+  url: "/localai/state"
+}
+
+export type LocalaiStateErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiStateError = LocalaiStateErrors[keyof LocalaiStateErrors]
+
+export type LocalaiStateResponses = {
+  /**
+   * Hardware, runtimes and recommendations
+   */
+  200: LocalAiState
+}
+
+export type LocalaiStateResponse = LocalaiStateResponses[keyof LocalaiStateResponses]
+
+export type LocalaiInstallData = {
+  body?: LocalAiInstallInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/install"
+}
+
+export type LocalaiInstallErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiInstallError = LocalaiInstallErrors[keyof LocalaiInstallErrors]
+
+export type LocalaiInstallResponses = {
+  /**
+   * Install job
+   */
+  200: LocalAiJob
+}
+
+export type LocalaiInstallResponse = LocalaiInstallResponses[keyof LocalaiInstallResponses]
+
+export type LocalaiRemoveData = {
+  body?: LocalAiModelInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/remove"
+}
+
+export type LocalaiRemoveErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiRemoveError = LocalaiRemoveErrors[keyof LocalaiRemoveErrors]
+
+export type LocalaiRemoveResponses = {
+  /**
+   * Removal success
+   */
+  200: boolean
+}
+
+export type LocalaiRemoveResponse = LocalaiRemoveResponses[keyof LocalaiRemoveResponses]
+
+export type LocalaiBenchmarkData = {
+  body?: LocalAiModelInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/benchmark"
+}
+
+export type LocalaiBenchmarkErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiBenchmarkError = LocalaiBenchmarkErrors[keyof LocalaiBenchmarkErrors]
+
+export type LocalaiBenchmarkResponses = {
+  /**
+   * Benchmark job
+   */
+  200: LocalAiJob
+}
+
+export type LocalaiBenchmarkResponse = LocalaiBenchmarkResponses[keyof LocalaiBenchmarkResponses]
+
+export type LocalaiReadinessData = {
+  body?: LocalAiModelInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/readiness"
+}
+
+export type LocalaiReadinessErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiReadinessError = LocalaiReadinessErrors[keyof LocalaiReadinessErrors]
+
+export type LocalaiReadinessResponses = {
+  /**
+   * Readiness job
+   */
+  200: LocalAiJob
+}
+
+export type LocalaiReadinessResponse = LocalaiReadinessResponses[keyof LocalaiReadinessResponses]
+
+export type LocalaiJobGetData = {
+  body?: never
+  path: {
+    jobID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/localai/job/{jobID}"
+}
+
+export type LocalaiJobGetErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type LocalaiJobGetError = LocalaiJobGetErrors[keyof LocalaiJobGetErrors]
+
+export type LocalaiJobGetResponses = {
+  /**
+   * Job status
+   */
+  200: LocalAiJob
+}
+
+export type LocalaiJobGetResponse = LocalaiJobGetResponses[keyof LocalaiJobGetResponses]
 
 export type McpStatusData = {
   body?: never

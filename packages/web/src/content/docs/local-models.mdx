@@ -1,0 +1,70 @@
+---
+title: Local Models
+description: Running local AI models with the Local AI manager.
+---
+
+OpenCode includes a **Local AI** manager that detects your hardware, finds local model runtimes like Ollama, and recommends coding models that will actually run well on your machine.
+
+Open the manager inside the TUI with `/local` (or the command palette: "Local AI models").
+
+---
+
+## How it works
+
+1. **Hardware detection** - OpenCode reads your CPU, RAM, and GPU information locally on your machine. Nothing is transmitted anywhere.
+2. **Runtime detection** - It checks for [Ollama](https://ollama.com) (`http://127.0.0.1:11434`, override with `OLLAMA_HOST`) and LM Studio (`http://127.0.0.1:1234`).
+3. **Recommendations** - A curated catalog of coding/agent models is scored against your hardware. Each recommendation explains why it fits.
+4. **One-click install** - Recommended models download through Ollama with live progress, then appear in the normal model picker automatically.
+
+---
+
+## Recommendation ratings
+
+| Rating          | Meaning                                                             |
+| --------------- | ------------------------------------------------------------------- |
+| Excellent fit   | Runs entirely in GPU memory with useful headroom                    |
+| Good fit        | Runs well but uses most of your GPU memory                          |
+| Usable          | Works, but may offload into system memory or need a smaller context |
+| Not recommended | Likely too large or too slow for this machine                       |
+
+Ratings combine estimated memory use (weights plus KV cache for the recommended context), GPU/VRAM availability, and model capabilities. Presets let you optimize for best overall, coding, agent/tool-calling, speed, memory, or context length.
+
+Estimates are estimates. The **Benchmark** action measures real generation speed on your machine, and measured results replace estimates in future recommendations.
+
+---
+
+## Agent readiness
+
+Local models vary widely in tool-calling reliability. The **Agent readiness test** probes chat, streaming, tool calling, structured arguments, and structured output using small sandboxed requests (it never touches your files). A low score means the model may struggle with agent mode even if it generates quickly.
+
+---
+
+## Using local models
+
+Installed Ollama models are discovered automatically and appear under the **Ollama** provider in the standard model picker - no config edits required. If you already configured an `ollama` provider manually in `opencode.json`, OpenCode leaves your configuration untouched.
+
+You can also skip the UI and configure runtimes by hand:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://localhost:11434/v1" },
+      "models": { "qwen3-coder:30b": {} }
+    }
+  }
+}
+```
+
+Benchmark results are stored per-machine under `~/.local/state/opencode/localai-benchmarks.json`.
+
+---
+
+## Limitations
+
+- VRAM detection is approximate on some systems. Windows cannot report >4 GB adapter memory through WMI's `Win32_VideoController`; readings near that ceiling are ignored rather than guessed. `nvidia-smi` provides exact values when available, as does sysfs on Linux.
+- Apple Silicon uses unified memory; roughly 70% of system RAM is treated as usable GPU budget.
+- Only Ollama supports install/remove/benchmark today. LM Studio models are detected and usable but managed from LM Studio itself.
+- Context recommendations are conservative starting points. Advanced users can override context settings through provider config.
