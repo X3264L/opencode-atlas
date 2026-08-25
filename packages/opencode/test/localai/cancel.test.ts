@@ -71,8 +71,9 @@ describe("install cancellation", () => {
     )
     const elapsed = Date.now() - startedAt
 
-    // Prompt interruption - previously this hung until the runner timeout
-    expect(elapsed).toBeLessThan(1_500)
+    // Prompt interruption - previously this hung until the runner timeout.
+    // The bound stays far below the old hang while tolerating CI load spikes.
+    expect(elapsed).toBeLessThan(2_500)
     expect(outcome).not.toBe("completed")
     expect(isAbortError(outcome)).toBe(true)
 

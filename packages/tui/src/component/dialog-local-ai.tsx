@@ -159,6 +159,15 @@ export function DialogLocalAi() {
       event.on("localai.health.changed", () => scheduleRefresh()),
       event.on("localai.executable.changed", () => scheduleRefresh()),
       event.on("localai.provider.changed", () => scheduleRefresh()),
+      event.on("atlas.routing.fallback", (payload) => {
+        const to = payload.properties.toModelID ?? payload.properties.toProviderID ?? "next candidate"
+        toast.show({
+          title: "Atlas fallback",
+          message: `${payload.properties.failureKind} → ${to} (${payload.properties.mode})`,
+          variant: "info",
+        })
+        scheduleRefresh()
+      }),
     ]
     onCleanup(() => disposers.forEach((dispose) => dispose()))
   })

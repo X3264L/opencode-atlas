@@ -1,4 +1,5 @@
 import type {
+  CandidateSource,
   RoutingCandidate,
   RoutingDecision,
   RoutingFailureKind,
@@ -141,32 +142,32 @@ function buildFallbackPlan(request: RoutingRequest, remaining: ScoredCandidate[]
   return plan
 }
 
-/** Whether a failure of the given kind may fall back to the next candidate */
-export function mayFallback(kind: RoutingFailureKind, request: RoutingRequest): { allowed: boolean; reason?: string } {
+/** Whether a failure of the given kind may fall back to the next candidate.
+ * Cloud-specific walls are enforced separately against the NEXT candidate's
+ * source so local alternates remain reachable in LOCAL mode. */
+export function mayFallback(kind: RoutingFailureKind): { allowed: boolean; reason?: string } {
   if (kind === "user_cancelled") {
     return { allowed: false, reason: "user cancellation never triggers fallback" }
   }
-  const effectivePrivacy = strongestPrivacy(request.policy.privacy, request.workspacePrivacy)
-  const cloudForbidden = effectivePrivacy === "local_only" || request.policy.mode === "local" || !request.policy.allowCloud
-  if (cloudForbidden) {
-    return {
-      allowed: false,
-      reason:
-        effectivePrivacy === "local_only"
-          ? "Cloud fallback is disabled by workspace policy."
-          : "Local-only mode never falls back to cloud.",
-    }
-  }
-  if (kind === "provider_auth_error") {
-    // Auth errors are deterministic configuration problems - retrying another
-    // candidate is fine but retrying THE SAME provider would loop; caller owns
-    // that via the already-computed fallback plan (different candidates only).
-    return { allowed: true }
-  }
-  if (kind === "context_exceeded") {
-    return { allowed: true, reason: "fallback must target larger context" }
-  }
   return { allowed: true }
+}
+
+/** Whether a specific candidate is reachable given privacy/mode walls */
+export function cloudAllowedForCandidate(
+  input: {
+    mode: string
+    allowCloud: boolean
+    workspacePrivacy?: "standard" | "prefer_local" | "local_only"
+    privacy: "standard" | "prefer_local" | "local_only"
+  },
+  candidateSource: CandidateSource,
+): boolean {
+  if (candidateSource !== "cloud") return true
+  const effectivePrivacy = strongestPrivacy(input.privacy, input.workspacePrivacy)
+  if (effectivePrivacy === "local_only") return false
+  if (!input.allowCloud) return false
+  if (input.mode === "local") return false
+  return true
 }
 
 /** Only candidates with strictly larger context may absorb context failures */

@@ -202,9 +202,9 @@ describe("lifecycle event order", () => {
     await h.manager.addArtifact(artifact)
 
     const started = await h.manager.start(artifact.id)
-    await waitFor(h.manager, started.id, (entry) => entry?.state === "failed")
-    const failedEvents = lifecycleStates(h.events, started.id).filter((entry) => entry.state === "failed")
-    expect(failedEvents.length).toBeGreaterThanOrEqual(1)
+    const failed = await h.manager.waitForTerminal(started.id)
+    expect(failed.state).toBe("failed")
+    expect(failed.lastError).toContain("timed out")
     await h.manager.dispose()
   }, 20_000)
 

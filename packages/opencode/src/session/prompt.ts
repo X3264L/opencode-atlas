@@ -48,6 +48,14 @@ import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { AtlasRouter } from "@/router/index"
+import { LocalAI } from "@/localai/localai"
+import { createExecutionRouteState } from "@/router/execution"
+import { classifyFailureFromMessage } from "@/router/types"
+import { readRoutingPrefs } from "@/router/store"
+import { RoutingEvent } from "@opencode-ai/schema/routing-event"
+import { getManagedLlamaCppManager } from "@/localai/process-manager"
+import type { RoutingCandidate } from "@/router/types"
 import { Database } from "@opencode-ai/core/database/database"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -138,6 +146,8 @@ const layer = Layer.effect(
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
     const events = yield* EventV2Bridge.Service
+    const router = yield* AtlasRouter.Service
+    const localai = yield* LocalAI.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
     const { db } = database
@@ -632,6 +642,75 @@ const layer = Layer.effect(
       return yield* provider.defaultModel().pipe(Effect.orDie)
     })
 
+    /**
+     * Atlas intelligent routing: when the user never picked a concrete model
+     * (no request override, no agent default, no session selection) and has
+     * opted into routing (persisted mode), resolve the execution route here.
+     * Explicit selections bypass the router entirely - they are commands, not
+     * hints.
+     */
+    const routedTurns = new Map<
+      string,
+      { state: ReturnType<typeof createExecutionRouteState>; current: RoutingCandidate; mode: "auto" | "local" | "hybrid" | "cloud" }
+    >()
+    const modelOverrides = new Map<string, { providerID: ProviderV2.ID; modelID: ModelV2.ID }>()
+
+    const maybeRoute = Effect.fn("SessionPrompt.maybeRoute")(function* (input: {
+      sessionID: SessionID
+      parentID: string
+      agentName?: string
+      agentToolsCount: number
+      hasImages: boolean
+    }) {
+      const prefs = yield* Effect.promise(readRoutingPrefs)
+      // Routing only activates on explicit opt-in - existing default-model
+      // semantics stay untouched otherwise.
+      if (!prefs.mode) return undefined
+
+      const decision = yield* router.decide({
+        surface: input.agentName ?? "chat",
+        requiresTools: input.agentToolsCount > 0,
+        requiresVision: input.hasImages,
+        estimatedInputTokens: 8_000,
+      })
+      const selected = decision.selected
+      if (!selected) return undefined
+
+      // Managed llama.cpp auto-start through the existing ownership lifecycle
+      const policyAllowsAutoStart = prefs.allowManagedAutoStart === true
+      if (
+        selected.source === "local" &&
+        selected.runtimeID === "llamacpp" &&
+        selected.lifecycle !== "warm" &&
+        policyAllowsAutoStart
+      ) {
+        const artifact = getManagedLlamaCppManager()
+          .getArtifacts()
+          .find(
+            (entry) =>
+              entry.displayName === (selected.runtimeModelID ?? "") ||
+              (selected.runtimeModelID ?? "").includes(entry.displayName),
+          )
+        if (artifact) yield* localai.startManaged({ artifactID: artifact.id }).pipe(Effect.ignore)
+      }
+
+      const state = createExecutionRouteState({
+        decision: { mode: decision.mode, primary: selected, fallbackPlan: decision.fallbackPlan },
+        maxFallbackAttempts: 2,
+        allowManagedAutoStart: policyAllowsAutoStart,
+        mode: decision.mode,
+        allowCloud: true,
+        privacy: "standard",
+      })
+      routedTurns.set(input.parentID, { state, current: selected, mode: decision.mode })
+
+      return {
+        providerID: ProviderV2.ID.make(selected.providerID),
+        modelID: ModelV2.ID.make(selected.runtimeModelID ?? selected.modelID),
+        ...(selected.variantID && selected.variantID !== "default" ? { variant: selected.variantID } : {}),
+      }
+    })
+
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
       const agentName = input.agent
       const ag = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
@@ -643,7 +722,29 @@ const layer = Layer.effect(
         throw error
       }
 
-      const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
+      let routedIdentity: { providerID: ProviderV2.ID; modelID: ModelV2.ID; variant?: string } | undefined
+      const turnMessageID = input.messageID ?? MessageID.ascending()
+      if (!input.model && !ag.model) {
+        // No explicit selection anywhere: check session-current explicitly so
+        // a user-picked model still bypasses routing.
+        const sessionCurrent = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+        const explicitInSession = Boolean(sessionCurrent.model)
+        const lastExplicit = yield* sessions
+          .findMessage(input.sessionID, (m) => m.info.role === "user" && !!m.info.model)
+          .pipe(Effect.orDie)
+        const hasExplicit = explicitInSession || Option.isSome(lastExplicit)
+        if (!hasExplicit) {
+          routedIdentity = yield* maybeRoute({
+            sessionID: input.sessionID,
+            parentID: turnMessageID,
+            agentName: ag.name,
+            agentToolsCount: ag.mode === "primary" ? 1 : 0,
+            hasImages: input.parts.some((part) => part.type === "file"),
+          })
+        }
+      }
+
+      const model = input.model ?? ag.model ?? routedIdentity ?? (yield* currentModel(input.sessionID))
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
       const full =
         !input.variant && ag.variant && same
@@ -654,7 +755,7 @@ const layer = Layer.effect(
       const variant = input.variant ?? (ag.variant && full?.variants?.[ag.variant] ? ag.variant : undefined)
 
       const info: SessionV1.User = {
-        id: input.messageID ?? MessageID.ascending(),
+        id: turnMessageID,
         role: "user",
         sessionID: input.sessionID,
         time: { created: Date.now() },
@@ -1138,7 +1239,14 @@ const layer = Layer.effect(
               history: msgs,
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-          const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          // Atlas routing fallback may override the persisted user-message
+          // model for this turn (bounded pre-commit fallback only).
+          const routedOverride = modelOverrides.get(lastUser.id)
+          const model = yield* getModel(
+            routedOverride?.providerID ?? lastUser.model.providerID,
+            routedOverride?.modelID ?? lastUser.model.modelID,
+            sessionID,
+          )
           const task = tasks.pop()
 
           if (task?.type === "subtask") {
@@ -1332,6 +1440,43 @@ const layer = Layer.effect(
             Effect.onInterrupt(() => finalizeInterruptedAssistant),
           )
           if (outcome === "break") break
+
+          // ---- Atlas routing fallback (bounded, pre-commit only) ----------
+          const routedTurn = routedTurns.get(lastUser.id)
+          if (routedTurn && handle.message.error) {
+            const rawError = (handle.message.error as { message?: string }).message ?? String(handle.message.error)
+            const failureKind = classifyFailureFromMessage(rawError).kind
+            // Safety guards: any meaningful output or executed tool stops replay
+            if ((handle.message.tokens?.output ?? 0) > 0) routedTurn.state.markStreamedMeaningfulOutput()
+            const parts = (handle.message as unknown as { parts?: { type: string; synthetic?: boolean }[] }).parts ?? []
+            if (parts.some((part) => part.type === "tool")) routedTurn.state.markExecutedSideEffectfulTool()
+
+            const next = routedTurn.state.nextAfterFailure({
+              candidate: routedTurn.current,
+              failureKind,
+              errorMessage: rawError,
+            })
+            if (next.candidate) {
+              const fromSource = routedTurn.current.source
+              modelOverrides.set(lastUser.id, {
+                providerID: ProviderV2.ID.make(next.candidate.providerID),
+                modelID: ModelV2.ID.make(next.candidate.runtimeModelID ?? next.candidate.modelID),
+              })
+              routedTurn.current = next.candidate
+              yield* events.publish(RoutingEvent.Fallback, {
+                mode: routedTurn.mode,
+                fromSource,
+                toProviderID: next.candidate.providerID,
+                toModelID: next.candidate.runtimeModelID ?? next.candidate.modelID,
+                failureKind,
+                reasonCodes: [failureKind, ...(next.blockedReasonCode ? [next.blockedReasonCode] : [])].filter(
+                  (code): code is string => Boolean(code),
+                ),
+              })
+              continue // rerun this turn with the fallback candidate
+            }
+          }
+
           continue
         }
 
@@ -1602,6 +1747,8 @@ export const node = LayerNode.make({
     SessionStatus.node,
     Session.node,
     Agent.node,
+    AtlasRouter.node,
+    LocalAI.node,
     Provider.node,
     SessionProcessor.node,
     SessionCompaction.node,

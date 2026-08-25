@@ -3,6 +3,7 @@ import { classifyTask } from "@/router/classify"
 import { buildCloudCandidates, buildLocalCandidates } from "@/router/candidates"
 import { estimateCloudCost } from "@/router/filter"
 import {
+  cloudAllowedForCandidate,
   fallbackForContextExceeded,
   mayFallback,
   route,
@@ -295,21 +296,27 @@ describe("manual override", () => {
 
 describe("fallback classification and bounds", () => {
   test("user cancellation never falls back", () => {
-    const verdict = mayFallback("user_cancelled", request({ policy: policy({ mode: "hybrid" }) }))
+    const verdict = mayFallback("user_cancelled")
     expect(verdict.allowed).toBe(false)
   })
 
   test("local-only workspace blocks cloud fallback even on runtime crash", () => {
-    const verdict = mayFallback(
-      "runtime_crashed",
-      request({ policy: policy({ mode: "hybrid" }), workspacePrivacy: "local_only" }),
-    )
-    expect(verdict.allowed).toBe(false)
-    expect(verdict.reason).toContain("workspace policy")
+    // Failure-kind eligibility is source-agnostic; the cloud WALL applies to
+    // the candidate itself (and filterCandidates already rejected it upfront).
+    const verdict = mayFallback("runtime_crashed")
+    expect(verdict.allowed).toBe(true)
+    const requestForWall = {
+      mode: "hybrid",
+      allowCloud: true,
+      privacy: "standard" as const,
+      workspacePrivacy: "local_only" as const,
+    }
+    expect(cloudAllowedForCandidate(requestForWall, "cloud")).toBe(false)
+    expect(cloudAllowedForCandidate(requestForWall, "local")).toBe(true)
   })
 
   test("hybrid allows bounded cloud fallback after runtime crash", () => {
-    const verdict = mayFallback("runtime_crashed", request({ policy: policy({ mode: "hybrid" }) }))
+    const verdict = mayFallback("runtime_crashed")
     expect(verdict.allowed).toBe(true)
   })
 

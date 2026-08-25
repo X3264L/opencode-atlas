@@ -58,6 +58,17 @@ Decisions are deterministic and explainable: every result carries stable reason 
 
 Evaluate or integrate via HTTP: `GET/POST /router/state|mode` and `POST /router/decide` (returns resolved provider/model identity; execution itself stays on OpenCode's normal provider path).
 
+## Execution-time activation
+
+When routing is opted in and a prompt carries no explicit model (no request override, no agent default, no session picker selection), the session execution path calls the router automatically: the selected candidate's identity becomes the user-message model, so streaming/tools/usage/errors flow through the normal provider stack. Safety rules at execution time:
+
+- **Bounded pre-commit fallback**: if the run fails before meaningful output with a policy-eligible failure, Atlas advances through the decision's fallback plan — same candidate never twice, attempts capped, cloud spend tracked against caps.
+- **No replay after commitment**: once meaningful text has streamed or any tool has executed, automatic fallback stops; the failure surfaces instead of silently restarting on another model.
+- **Cancellation kills routing**: aborting a request disables further fallbacks and managed auto-start for that turn.
+- **Managed auto-start** only when explicitly enabled (`allowManagedAutoStart`): cold registered GGUFs are started via the existing ownership lifecycle before provider invocation.
+
+Fallback transitions emit `atlas.routing.fallback` events; the TUI surfaces them as concise toasts.
+
 ## Runtime events
 
 Local AI publishes typed events through OpenCode's standard event stream (`/event`, `/global/event`):
