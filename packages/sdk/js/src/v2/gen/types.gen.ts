@@ -93,6 +93,15 @@ export type Event =
   | EventWorktreeFailed
   | EventServerConnected
   | EventGlobalDisposed
+  | EventLocalaiInstanceLifecycle
+  | EventLocalaiInstanceLog
+  | EventLocalaiHealthChanged
+  | EventLocalaiManagedArtifact
+  | EventLocalaiExecutableChanged
+  | EventLocalaiBenchmarkStatus
+  | EventLocalaiReadinessStatus
+  | EventLocalaiInstallStatus
+  | EventLocalaiProviderChanged
   | EventServerInstanceDisposed
 
 export type QuestionReplied = {
@@ -1598,6 +1607,111 @@ export type GlobalEvent = {
         type: "global.disposed"
         properties: {
           [key: string]: unknown
+        }
+      }
+    | {
+        id: string
+        type: "localai.instance.lifecycle"
+        properties: {
+          runtimeID: string
+          instanceID: string
+          artifactID?: string
+          state: "starting" | "running" | "stopping" | "stopped" | "crashed" | "failed"
+          phase?: "port_selected" | "spawning" | "loading_model" | "health_wait" | "ready" | "cancelled"
+          generation: number
+          exitCode?: number
+          reason?: string
+          stderrTail?: Array<string>
+        }
+      }
+    | {
+        id: string
+        type: "localai.instance.log"
+        properties: {
+          runtimeID: string
+          instanceID: string
+          lines: Array<{
+            at: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+            source: "stdout" | "stderr"
+            line: string
+          }>
+        }
+      }
+    | {
+        id: string
+        type: "localai.health.changed"
+        properties: {
+          runtimeID: string
+          health: "available" | "unavailable" | "degraded" | "unsupported"
+          detail?: string
+        }
+      }
+    | {
+        id: string
+        type: "localai.managed.artifact"
+        properties: {
+          artifactID: string
+          change: "registered" | "removed" | "file_missing" | "file_restored"
+        }
+      }
+    | {
+        id: string
+        type: "localai.executable.changed"
+        properties: {
+          found: boolean
+          path?: string
+          reason?: string
+        }
+      }
+    | {
+        id: string
+        type: "localai.benchmark.status"
+        properties: {
+          runtimeID: string
+          modelID: string
+          status: "started" | "completed" | "failed" | "cancelled"
+          tokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          promptTokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          timeToFirstTokenMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          error?: string
+        }
+      }
+    | {
+        id: string
+        type: "localai.readiness.status"
+        properties: {
+          runtimeID: string
+          modelID: string
+          status: "started" | "check_completed" | "completed" | "failed" | "cancelled"
+          check?: {
+            id: string
+            label: string
+            pass: boolean
+          }
+          score?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          error?: string
+        }
+      }
+    | {
+        id: string
+        type: "localai.install.status"
+        properties: {
+          jobID: string
+          runtimeID?: string
+          runtimeModelID?: string
+          status: "started" | "progress" | "verifying" | "completed" | "cancelled" | "failed"
+          percent?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          message?: string
+          error?: string
+        }
+      }
+    | {
+        id: string
+        type: "localai.provider.changed"
+        properties: {
+          runtimeID: string
+          endpoint?: string
+          available: boolean
         }
       }
     | EventServerInstanceDisposed
@@ -3243,6 +3357,15 @@ export type V2Event =
   | WorktreeFailed
   | ServerConnected
   | GlobalDisposed
+  | LocalaiInstanceLifecycle
+  | LocalaiInstanceLog
+  | LocalaiHealthChanged
+  | LocalaiManagedArtifact
+  | LocalaiExecutableChanged
+  | LocalaiBenchmarkStatus
+  | LocalaiReadinessStatus
+  | LocalaiInstallStatus
+  | LocalaiProviderChanged
 
 export type V2EventStream = string
 
@@ -6407,6 +6530,201 @@ export type GlobalDisposed = {
   }
 }
 
+export type LocalaiInstanceLifecycle = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.instance.lifecycle"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    runtimeID: string
+    instanceID: string
+    artifactID?: string
+    state: "starting" | "running" | "stopping" | "stopped" | "crashed" | "failed"
+    phase?: "port_selected" | "spawning" | "loading_model" | "health_wait" | "ready" | "cancelled"
+    generation: number
+    exitCode?: number
+    reason?: string
+    stderrTail?: Array<string>
+  }
+}
+
+export type LocalaiInstanceLog = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.instance.log"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    runtimeID: string
+    instanceID: string
+    lines: Array<{
+      at: number | "NaN" | "Infinity" | "-Infinity"
+      source: "stdout" | "stderr"
+      line: string
+    }>
+  }
+}
+
+export type LocalaiHealthChanged = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.health.changed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    runtimeID: string
+    health: "available" | "unavailable" | "degraded" | "unsupported"
+    detail?: string
+  }
+}
+
+export type LocalaiManagedArtifact = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.managed.artifact"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    artifactID: string
+    change: "registered" | "removed" | "file_missing" | "file_restored"
+  }
+}
+
+export type LocalaiExecutableChanged = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.executable.changed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    found: boolean
+    path?: string
+    reason?: string
+  }
+}
+
+export type LocalaiBenchmarkStatus = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.benchmark.status"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    runtimeID: string
+    modelID: string
+    status: "started" | "completed" | "failed" | "cancelled"
+    tokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity"
+    promptTokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity"
+    timeToFirstTokenMs?: number | "NaN" | "Infinity" | "-Infinity"
+    error?: string
+  }
+}
+
+export type LocalaiReadinessStatus = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.readiness.status"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    runtimeID: string
+    modelID: string
+    status: "started" | "check_completed" | "completed" | "failed" | "cancelled"
+    check?: {
+      id: string
+      label: string
+      pass: boolean
+    }
+    score?: number | "NaN" | "Infinity" | "-Infinity"
+    error?: string
+  }
+}
+
+export type LocalaiInstallStatus = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.install.status"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    jobID: string
+    runtimeID?: string
+    runtimeModelID?: string
+    status: "started" | "progress" | "verifying" | "completed" | "cancelled" | "failed"
+    percent?: number | "NaN" | "Infinity" | "-Infinity"
+    message?: string
+    error?: string
+  }
+}
+
+export type LocalaiProviderChanged = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "localai.provider.changed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    runtimeID: string
+    endpoint?: string
+    available: boolean
+  }
+}
+
 export type QuestionV2Request = {
   id: string
   sessionID: string
@@ -7351,6 +7669,120 @@ export type EventGlobalDisposed = {
   type: "global.disposed"
   properties: {
     [key: string]: unknown
+  }
+}
+
+export type EventLocalaiInstanceLifecycle = {
+  id: string
+  type: "localai.instance.lifecycle"
+  properties: {
+    runtimeID: string
+    instanceID: string
+    artifactID?: string
+    state: "starting" | "running" | "stopping" | "stopped" | "crashed" | "failed"
+    phase?: "port_selected" | "spawning" | "loading_model" | "health_wait" | "ready" | "cancelled"
+    generation: number
+    exitCode?: number
+    reason?: string
+    stderrTail?: Array<string>
+  }
+}
+
+export type EventLocalaiInstanceLog = {
+  id: string
+  type: "localai.instance.log"
+  properties: {
+    runtimeID: string
+    instanceID: string
+    lines: Array<{
+      at: number | "NaN" | "Infinity" | "-Infinity"
+      source: "stdout" | "stderr"
+      line: string
+    }>
+  }
+}
+
+export type EventLocalaiHealthChanged = {
+  id: string
+  type: "localai.health.changed"
+  properties: {
+    runtimeID: string
+    health: "available" | "unavailable" | "degraded" | "unsupported"
+    detail?: string
+  }
+}
+
+export type EventLocalaiManagedArtifact = {
+  id: string
+  type: "localai.managed.artifact"
+  properties: {
+    artifactID: string
+    change: "registered" | "removed" | "file_missing" | "file_restored"
+  }
+}
+
+export type EventLocalaiExecutableChanged = {
+  id: string
+  type: "localai.executable.changed"
+  properties: {
+    found: boolean
+    path?: string
+    reason?: string
+  }
+}
+
+export type EventLocalaiBenchmarkStatus = {
+  id: string
+  type: "localai.benchmark.status"
+  properties: {
+    runtimeID: string
+    modelID: string
+    status: "started" | "completed" | "failed" | "cancelled"
+    tokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity"
+    promptTokensPerSecond?: number | "NaN" | "Infinity" | "-Infinity"
+    timeToFirstTokenMs?: number | "NaN" | "Infinity" | "-Infinity"
+    error?: string
+  }
+}
+
+export type EventLocalaiReadinessStatus = {
+  id: string
+  type: "localai.readiness.status"
+  properties: {
+    runtimeID: string
+    modelID: string
+    status: "started" | "check_completed" | "completed" | "failed" | "cancelled"
+    check?: {
+      id: string
+      label: string
+      pass: boolean
+    }
+    score?: number | "NaN" | "Infinity" | "-Infinity"
+    error?: string
+  }
+}
+
+export type EventLocalaiInstallStatus = {
+  id: string
+  type: "localai.install.status"
+  properties: {
+    jobID: string
+    runtimeID?: string
+    runtimeModelID?: string
+    status: "started" | "progress" | "verifying" | "completed" | "cancelled" | "failed"
+    percent?: number | "NaN" | "Infinity" | "-Infinity"
+    message?: string
+    error?: string
+  }
+}
+
+export type EventLocalaiProviderChanged = {
+  id: string
+  type: "localai.provider.changed"
+  properties: {
+    runtimeID: string
+    endpoint?: string
+    available: boolean
   }
 }
 

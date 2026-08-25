@@ -232,7 +232,7 @@ export async function readinessViaOpenAICompat(
   fetchFn: FetchLike,
   endpoint: string,
   runtimeModelID: string,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; onCheck?: (check: ReadinessCheck) => void },
 ): Promise<ReadinessResult> {
   const checks: ReadinessCheck[] = []
   const testedAt = Date.now()
@@ -250,6 +250,7 @@ export async function readinessViaOpenAICompat(
       label: "Chat",
       pass: !!basic?.content && basic.content.trim().length > 0,
     })
+    options?.onCheck?.(checks[checks.length - 1]!)
 
     let streamedChunks = 0
     try {
@@ -264,6 +265,7 @@ export async function readinessViaOpenAICompat(
       )
     } catch {}
     checks.push({ id: "streaming", label: "Streaming", pass: streamedChunks > 1 })
+    options?.onCheck?.(checks[checks.length - 1]!)
 
     let toolCalled = false
     let argsValid = false
@@ -288,7 +290,9 @@ export async function readinessViaOpenAICompat(
       }
     } catch {}
     checks.push({ id: "tool-calling", label: "Tool Calling", pass: toolCalled })
+    options?.onCheck?.(checks[checks.length - 1]!)
     checks.push({ id: "structured-args", label: "Structured Args", pass: argsValid })
+    options?.onCheck?.(checks[checks.length - 1]!)
 
     let structuredValid = false
     try {
@@ -325,6 +329,7 @@ export async function readinessViaOpenAICompat(
         typeof parsed.action === "string" && typeof parsed.from === "string" && typeof parsed.to === "string"
     } catch {}
     checks.push({ id: "structured-output", label: "Structured Output", pass: structuredValid })
+    options?.onCheck?.(checks[checks.length - 1]!)
 
     const passed = checks.filter((check) => check.pass).length
     return { success: true, checks, score: Math.round((passed / checks.length) * 100), testedAt }

@@ -22,13 +22,16 @@ import {
   type RuntimePreference,
 } from "./runtime-choice"
 import type { ModelVariant } from "./catalog"
-import type { ReadinessResult } from "./readiness"
+import type { ReadinessCheck, ReadinessResult } from "./readiness"
 import { memoryBudgets, planContext } from "./memory-model"
 import { effectiveVramBytes } from "./hardware"
 import { createLlamaCppAdapter } from "./runtime/llamacpp"
 import { listOpenAICompatModels } from "./runtime/openai-compat"
 import { getManagedLlamaCppManager, type ManagedRuntimeInstance } from "./process-manager"
 import { registerGgufArtifact, checkArtifactFile, type ManagedGgufArtifact } from "./gguf"
+import { createLocalAiEventPublisher } from "./events"
+import { createRuntimeHealthWatcher } from "./health-watcher"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { checkDiskSpace, resolveOllamaModelsDir } from "./disk"
 
 const HARDWARE_CACHE_TTL_MS = 5 * 60_000
@@ -91,7 +94,10 @@ export interface LocalAiState {
 }
 
 type ReadinessAdapter = LocalRuntimeAdapter & {
-  probeReadiness?(modelID: string, options?: { signal?: AbortSignal }): Promise<ReadinessResult>
+  probeReadiness?(
+    modelID: string,
+    options?: { signal?: AbortSignal; onCheck?: (check: ReadinessCheck) => void },
+  ): Promise<ReadinessResult>
 }
 
 export interface ManagedArtifactView {
@@ -181,12 +187,42 @@ export const layer = Layer.effect(
     let cachedHardware: HardwareProfile | undefined
     let cachedAt = 0
     const jobs = new Map<string, JobExecution>()
-    const manager = getManagedLlamaCppManager()
+    const bridge = yield* EventV2Bridge.Service
+    const publish = createLocalAiEventPublisher(bridge)
+
+    const manager = getManagedLlamaCppManager({
+      emit: (event) => {
+        if (event.kind === "lifecycle") {
+          publish.instanceLifecycle({
+            runtimeID: event.runtimeID,
+            instanceID: event.instanceID,
+            artifactID: event.artifactID,
+            state: event.state,
+            ...(event.phase ? { phase: event.phase } : {}),
+            generation: event.generation,
+            ...(event.exitCode !== undefined ? { exitCode: event.exitCode } : {}),
+            ...(event.reason ? { reason: event.reason } : {}),
+            ...(event.stderrTail ? { stderrTail: event.stderrTail } : {}),
+          })
+          // Managed availability is a provider-availability transition
+          if (event.state === "running" || event.state === "stopped" || event.state === "crashed") {
+            const endpoint = manager.listInstances().find((entry) => entry.id === event.instanceID)?.endpoint
+            publish.providerChanged(event.runtimeID, event.state === "running", endpoint)
+            void healthWatcher.refresh()
+          }
+        } else {
+          publish.instanceLogs(event.runtimeID, event.instanceID, event.lines)
+        }
+      },
+    })
     yield* Effect.promise(() => manager.initialize())
 
     // Normal termination cleans up owned llama-server children. Best-effort:
     // async stop on signals, synchronous kill as the exit-event last resort.
-    const cleanup = () => manager.disposeSync()
+    const cleanup = () => {
+      healthWatcher.stop()
+      manager.disposeSync()
+    }
     process.once("SIGINT", () => {
       cleanup()
       process.exit(130)
@@ -197,6 +233,28 @@ export const layer = Layer.effect(
     })
     process.once("exit", cleanup)
 
+    // Change-only runtime health broadcasting - quiet machines emit nothing.
+    const healthProbeCache = new Map<string, RuntimeDetectionResult>()
+    const healthWatcher = createRuntimeHealthWatcher({
+      runtimes: () => ["ollama", "lmstudio", "llamacpp"],
+      probe: async (runtimeID) => {
+        if (runtimeID === "llamacpp") {
+          const managedRunning = manager.listInstances().some((entry) => entry.state === "running")
+          if (managedRunning) return { state: "available" }
+        }
+        const adapter = createAllCached().find((entry) => entry.id === runtimeID)
+        if (!adapter) return { state: "unsupported" }
+        const detection = await adapter.detect().catch(() => ({ available: false, detail: "probe failed" }) as RuntimeDetectionResult)
+        healthProbeCache.set(runtimeID, detection)
+        return detection.available
+          ? { state: "available", ...(detection.detail ? { detail: detection.detail } : {}) }
+          : { state: "unavailable", ...(detection.detail ? { detail: detection.detail } : {}) }
+      },
+      onTransition: ({ runtimeID, health }) => publish.healthChanged(runtimeID, health.state, health.detail),
+      intervalMs: 30_000,
+    })
+    healthWatcher.start()
+
     interface JobExecution {
       info: InstallJob
       controller?: AbortController
@@ -204,12 +262,28 @@ export const layer = Layer.effect(
 
     function startJob(job: InstallJob, options: { controller?: AbortController }, run: (job: InstallJob) => Promise<void>) {
       jobs.set(job.id, { info: job, ...(options.controller ? { controller: options.controller } : {}) })
+      if (job.kind === "install") {
+        publish.installStatus({
+          jobID: job.id,
+          ...(job.runtimeID ? { runtimeID: job.runtimeID } : {}),
+          ...(job.runtimeTag ? { runtimeModelID: job.runtimeTag } : {}),
+          status: "started",
+        })
+      }
       void run(job)
         .then(() => {
           if (jobs.has(job.id)) {
             jobs.set(job.id, {
               info: { ...job, state: "done", status: undefined, percent: undefined },
               ...(options.controller ? { controller: options.controller } : {}),
+            })
+          }
+          if (job.kind === "install") {
+            publish.installStatus({
+              jobID: job.id,
+              ...(job.runtimeID ? { runtimeID: job.runtimeID } : {}),
+              ...(job.runtimeTag ? { runtimeModelID: job.runtimeTag } : {}),
+              status: "completed",
             })
           }
         })
@@ -225,18 +299,55 @@ export const layer = Layer.effect(
               },
               ...(options.controller ? { controller: options.controller } : {}),
             })
+            if (job.kind === "install") {
+              publish.installStatus({
+                jobID: job.id,
+                ...(job.runtimeID ? { runtimeID: job.runtimeID } : {}),
+                ...(job.runtimeTag ? { runtimeModelID: job.runtimeTag } : {}),
+                status: "cancelled",
+              })
+            }
             return
           }
+          const message = error instanceof Error ? error.message : String(error)
           jobs.set(job.id, {
             info: {
               ...job,
               state: "error",
-              error: error instanceof Error ? error.message : String(error),
+              error: message,
             },
             ...(options.controller ? { controller: options.controller } : {}),
           })
+          if (job.kind === "install") {
+            publish.installStatus({
+              jobID: job.id,
+              ...(job.runtimeID ? { runtimeID: job.runtimeID } : {}),
+              ...(job.runtimeTag ? { runtimeModelID: job.runtimeTag } : {}),
+              status: "failed",
+              ...(message ? { error: message } : {}),
+            })
+          }
         })
       return job
+    }
+
+    /** Integer-percent / status-text change detection for download progress */
+    const lastProgress = new Map<string, { percent?: number; status?: string }>()
+    function emitInstallProgress(job: InstallJob, progress: { percent?: number; status: string }) {
+      if (job.kind !== "install") return
+      const previous = lastProgress.get(job.id) ?? {}
+      const percentChanged = progress.percent !== undefined && progress.percent !== previous.percent
+      const statusChanged = progress.status !== previous.status
+      if (!percentChanged && !statusChanged) return
+      lastProgress.set(job.id, { percent: progress.percent, status: progress.status })
+      publish.installStatus({
+        jobID: job.id,
+        ...(job.runtimeID ? { runtimeID: job.runtimeID } : {}),
+        ...(job.runtimeTag ? { runtimeModelID: job.runtimeTag } : {}),
+        status: "progress",
+        ...(progress.percent !== undefined ? { percent: progress.percent } : {}),
+        ...(progress.status ? { message: progress.status } : {}),
+      })
     }
 
     let jobCounter = 0
@@ -481,6 +592,7 @@ export const layer = Layer.effect(
               onProgress: (progress) => {
                 current.status = progress.status
                 current.percent = progress.percent
+                emitInstallProgress(current, { percent: progress.percent, status: progress.status })
               },
             },
           ),
@@ -547,13 +659,35 @@ export const layer = Layer.effect(
       return yield* Effect.sync(() =>
         startJob(job, { controller }, async (current) => {
           current.status = "Generating sample output..."
+          publish.benchmarkStatus({ runtimeID: adapter.id, modelID: input.modelID, status: "started" })
           const benchmark = await adapter.benchmarkModel!(input.modelID, { signal: controller.signal })
           const store = await readStore()
           const runtime = { ...store.benchmarks?.[adapter.id] }
           runtime[input.modelID] = benchmark
           await writeStore({ ...store, benchmarks: { ...store.benchmarks, [adapter.id]: runtime } })
           current.result = benchmark
-          if (!benchmark.success) throw new Error(benchmark.error ?? "Benchmark failed")
+          if (!benchmark.success) {
+            const cancelled = isAbortError(controller.signal.reason)
+            publish.benchmarkStatus({
+              runtimeID: adapter.id,
+              modelID: input.modelID,
+              status: cancelled ? "cancelled" : "failed",
+              ...(benchmark.error ? { error: benchmark.error } : {}),
+            })
+            throw new Error(benchmark.error ?? "Benchmark failed")
+          }
+          publish.benchmarkStatus({
+            runtimeID: adapter.id,
+            modelID: input.modelID,
+            status: "completed",
+            ...(benchmark.tokensPerSecond !== undefined ? { tokensPerSecond: benchmark.tokensPerSecond } : {}),
+            ...(benchmark.promptTokensPerSecond !== undefined
+              ? { promptTokensPerSecond: benchmark.promptTokensPerSecond }
+              : {}),
+            ...(benchmark.timeToFirstTokenMs !== undefined
+              ? { timeToFirstTokenMs: benchmark.timeToFirstTokenMs }
+              : {}),
+          })
         }),
       )
     })
@@ -571,8 +705,32 @@ export const layer = Layer.effect(
       return yield* Effect.sync(() =>
         startJob(job, {}, async (current) => {
           current.status = "Testing agent compatibility..."
-          const readiness: ReadinessResult = await adapter.probeReadiness!(input.modelID)
-          if (!readiness.success) throw new Error(readiness.error ?? "Readiness test failed")
+          publish.readinessStatus({ runtimeID: adapter.id, modelID: input.modelID, status: "started" })
+          const readiness: ReadinessResult = await adapter.probeReadiness!(input.modelID, {
+            onCheck: (check) => {
+              publish.readinessStatus({
+                runtimeID: adapter.id,
+                modelID: input.modelID,
+                status: "check_completed",
+                check,
+              })
+            },
+          })
+          if (!readiness.success) {
+            publish.readinessStatus({
+              runtimeID: adapter.id,
+              modelID: input.modelID,
+              status: "failed",
+              ...(readiness.error ? { error: readiness.error } : {}),
+            })
+            throw new Error(readiness.error ?? "Readiness test failed")
+          }
+          publish.readinessStatus({
+            runtimeID: adapter.id,
+            modelID: input.modelID,
+            status: "completed",
+            score: readiness.score,
+          })
           const toolCheck = readiness.checks.find((check) => check.id === "tool-calling")
           const store = await readStore()
           const runtime = { ...store.readiness?.[adapter.id] }
@@ -628,11 +786,18 @@ export const layer = Layer.effect(
       return { contextSize: plan.recommended, ...(gpuLayers !== undefined ? { gpuLayers } : {}) }
     }
 
+    /** Tracks file-existence so missing/restored transitions can be emitted */
+    const knownFileState = new Map<string, boolean>()
     async function buildManagedView(): Promise<ManagedRuntimeView> {
       const resolution = await manager.resolveExecutable()
       const views: ManagedArtifactView[] = []
       for (const artifact of manager.getArtifacts()) {
         const fileStatus = await checkArtifactFile(artifact)
+        const previous = knownFileState.get(artifact.id)
+        if (previous !== undefined && previous !== fileStatus.exists) {
+          publish.artifactChanged(artifact.id, fileStatus.exists ? "file_restored" : "file_missing")
+        }
+        knownFileState.set(artifact.id, fileStatus.exists)
         const instance = manager.runningInstanceForArtifact(artifact.id)
         views.push({
           artifact,
@@ -661,6 +826,8 @@ export const layer = Layer.effect(
         return yield* Effect.fail(new InstallError(result.error ?? "Invalid GGUF file"))
       }
       yield* Effect.promise(() => manager.addArtifact(result.artifact!))
+      knownFileState.set(result.artifact.id, true)
+      publish.artifactChanged(result.artifact.id, "registered")
       const view = (yield* Effect.promise(buildManagedView)).artifacts.find(
         (entry) => entry.artifact.id === result.artifact!.id,
       )
@@ -671,6 +838,8 @@ export const layer = Layer.effect(
     const removeManagedArtifact = Effect.fn("LocalAI.removeManagedArtifact")(function* (input: { artifactID: string }) {
       const result = yield* Effect.promise(() => manager.removeArtifact(input.artifactID))
       if (!result.ok) return yield* Effect.fail(new InstallError(result.error ?? "Failed to remove registration"))
+      knownFileState.delete(input.artifactID)
+      publish.artifactChanged(input.artifactID, "removed")
       return true
     })
 
@@ -679,6 +848,9 @@ export const layer = Layer.effect(
         return yield* Effect.fail(new InstallError("Executable path cannot be empty"))
       }
       manager.setLlamaServerPath(input.path)
+      const resolution = yield* Effect.promise(() => manager.resolveExecutable())
+      if (resolution.found) publish.executableChanged(true, resolution.path)
+      else publish.executableChanged(false, undefined, resolution.reason)
     })
 
     const startManaged = Effect.fn("LocalAI.startManaged")(function* (input: { artifactID: string }) {
@@ -745,6 +917,10 @@ export const layer = Layer.effect(
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer: layer.pipe(Layer.orDie), deps: [] })
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer.pipe(Layer.orDie),
+  deps: [EventV2Bridge.node],
+})
 
 export * as LocalAI from "./localai"

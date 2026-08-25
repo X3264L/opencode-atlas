@@ -42,6 +42,26 @@ How it works:
 5. **Use** - once running, the managed endpoint feeds the normal llama.cpp runtime/provider flow: the model appears in OpenCode's picker, and Benchmark/Readiness target it like any other instance.
 6. **Own** - Stop/Restart act only on processes Atlas started (tracked by live child handle, never by persisted PID alone). Logs are captured into a bounded tail buffer viewable in `/local`. Normal OpenCode termination cleans up owned children; after a crash of Atlas itself the old process may survive but is never re-signalled - it shows as stale instead.
 
+## Runtime events
+
+Local AI publishes typed events through OpenCode's standard event stream (`/event`, `/global/event`):
+
+| Event | Meaning |
+| --- | --- |
+| `localai.instance.lifecycle` | Managed instance transitions (`state` + transient `phase` such as `loading_model`, `health_wait`) with a per-artifact `generation` |
+| `localai.instance.log` | Batched new stdout/stderr lines from an Atlas-owned process |
+| `localai.health.changed` | Effective runtime health transitions only (never emitted on unchanged probes) |
+| `localai.managed.artifact` | GGUF registered / removed / file missing / file restored |
+| `localai.executable.changed` | llama-server path configuration or discovery result changed |
+| `localai.benchmark.status` | started / completed / failed / cancelled with real metrics on completion |
+| `localai.readiness.status` | started / `check_completed` (per probe) / completed / failed / cancelled |
+| `localai.install.status` | Ollama download lifecycle: started / progress / verifying / completed / cancelled / failed |
+| `localai.provider.changed` | A local model source became available or unavailable |
+
+Correctness model: **snapshots are authoritative; events are immediacy.** Clients refetch the relevant snapshot on reconnect; missing an event never corrupts state. Each lifecycle event carries a monotonic per-artifact `generation` plus a unique `instanceID`, so stale events from a previous run are identifiable and droppable, and duplicate delivery is harmless.
+
+Managed starts are non-blocking: the start request returns as soon as the process is spawned (identity + `starting` state), and progress arrives via events until the health gate resolves.
+
 ## How recommendations work
 
 OpenCode detects your hardware (GPU vendor and VRAM, system RAM, Apple unified memory) and scores every catalog model against it per quantization variant. The final hierarchy is:

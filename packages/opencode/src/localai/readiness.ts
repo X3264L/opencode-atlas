@@ -71,7 +71,7 @@ function parseToolArguments(input: unknown): Record<string, unknown> | undefined
 
 export async function runReadinessTest(
   modelID: string,
-  options: { endpoint: string; fetch?: FetchLike },
+  options: { endpoint: string; fetch?: FetchLike; onCheck?: (check: ReadinessCheck) => void },
 ): Promise<ReadinessResult> {
   const fetchFn = options.fetch ?? fetch
   const checks: ReadinessCheck[] = []
@@ -87,6 +87,7 @@ export async function runReadinessTest(
       label: "Chat",
       pass: !!basic.message?.content && basic.message.content.trim().length > 0,
     })
+    options?.onCheck?.(checks[checks.length - 1]!)
 
     let streamedChunks = 0
     try {
@@ -115,6 +116,7 @@ export async function runReadinessTest(
       }
     } catch {}
     checks.push({ id: "streaming", label: "Streaming", pass: streamedChunks > 1 })
+    options?.onCheck?.(checks[checks.length - 1]!)
 
     let toolCalled = false
     let argsValid = false
@@ -132,7 +134,9 @@ export async function runReadinessTest(
       }
     } catch {}
     checks.push({ id: "tool-calling", label: "Tool Calling", pass: toolCalled })
+    options?.onCheck?.(checks[checks.length - 1]!)
     checks.push({ id: "structured-args", label: "Structured Args", pass: argsValid })
+    options?.onCheck?.(checks[checks.length - 1]!)
 
     let structuredValid = false
     try {
@@ -156,6 +160,7 @@ export async function runReadinessTest(
         typeof parsed.action === "string" && typeof parsed.from === "string" && typeof parsed.to === "string"
     } catch {}
     checks.push({ id: "structured-output", label: "Structured Output", pass: structuredValid })
+    options?.onCheck?.(checks[checks.length - 1]!)
 
     const passed = checks.filter((check) => check.pass).length
     return { success: true, checks, score: Math.round((passed / checks.length) * 100), testedAt }

@@ -8,7 +8,7 @@ import type {
   RuntimeDetectionResult,
   RuntimeHealth,
 } from "../runtime-types"
-import type { ReadinessResult } from "../readiness"
+import type { ReadinessCheck, ReadinessResult } from "../readiness"
 import { runReadinessTest } from "../readiness"
 
 export const OLLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
@@ -90,7 +90,7 @@ export function createOllamaAdapter(options?: {
   env?: Record<string, string | undefined>
   fetch?: FetchLike
 }): LocalRuntimeAdapter & {
-  probeReadiness(modelID: string, options?: { signal?: AbortSignal }): Promise<ReadinessResult>
+  probeReadiness(modelID: string, options?: { signal?: AbortSignal; onCheck?: (check: ReadinessCheck) => void }): Promise<ReadinessResult>
 } {
   const endpoint = options?.endpoint ?? resolveOllamaEndpoint(options?.env)
   const doFetch = options?.fetch ?? fetch
@@ -260,8 +260,8 @@ export function createOllamaAdapter(options?: {
 
     // Uses Ollama's native chat API - the readiness probe relies on native
     // options/format fields the OpenAI-compatible route does not expose.
-    probeReadiness(modelID: string): Promise<ReadinessResult> {
-      return runReadinessTest(modelID, { endpoint })
+    probeReadiness(modelID: string, readinessOptions?: { onCheck?: (check: ReadinessCheck) => void }): Promise<ReadinessResult> {
+      return runReadinessTest(modelID, { endpoint, ...(readinessOptions?.onCheck ? { onCheck: readinessOptions.onCheck } : {}) })
     },
 
     async benchmarkModel(id: string, benchmarkOptions?): Promise<ModelBenchmark> {

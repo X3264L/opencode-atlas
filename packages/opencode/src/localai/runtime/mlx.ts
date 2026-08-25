@@ -8,7 +8,7 @@ import type {
   RuntimeHealth,
 } from "../runtime-types"
 import { benchmarkViaOpenAICompat, listOpenAICompatModels, readinessViaOpenAICompat } from "./openai-compat"
-import type { ReadinessResult } from "../readiness"
+import type { ReadinessCheck, ReadinessResult } from "../readiness"
 import type { FetchLike } from "./openai-compat"
 
 export const MLX_DEFAULT_ENDPOINT = "http://127.0.0.1:8080"
@@ -61,7 +61,7 @@ export function createMlxAdapter(options?: {
   platform?: string
   arch?: string
 }): LocalRuntimeAdapter & {
-  probeReadiness(modelID: string, options?: { signal?: AbortSignal }): Promise<ReadinessResult>
+  probeReadiness(modelID: string, options?: { signal?: AbortSignal; onCheck?: (check: ReadinessCheck) => void }): Promise<ReadinessResult>
 } {
   // Endpoint overrides only apply on supported platforms - never probe
   // user-configured remote endpoints from machines that cannot run MLX.
@@ -135,8 +135,8 @@ export function createMlxAdapter(options?: {
       return benchmarkViaOpenAICompat(doFetch, endpoint, id, benchmarkOptions)
     },
 
-    async probeReadiness(modelID: string, readinessOptions?: { signal?: AbortSignal }): Promise<ReadinessResult> {
-      return readinessViaOpenAICompat(doFetch, endpoint, modelID, readinessOptions)
+    async probeReadiness(modelID: string, readinessOptions?: { signal?: AbortSignal; onCheck?: (check: ReadinessCheck) => void }): Promise<ReadinessResult> {
+      return readinessViaOpenAICompat(doFetch, endpoint, modelID, { signal: readinessOptions?.signal, onCheck: readinessOptions?.onCheck })
     },
   }
 }

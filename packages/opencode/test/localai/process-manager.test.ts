@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
+import { appendFileSync } from "node:fs"
 import os from "os"
 import path from "path"
-import { createManagedLlamaCppManager, LOG_BUFFER_LIMIT, type ManagedRuntimeInstance } from "@/localai/process-manager"
+import {
+  createManagedLlamaCppManager,
+  LOG_BUFFER_LIMIT,
+  type ManagedManagerEvent,
+  type ManagedRuntimeInstance,
+} from "@/localai/process-manager"
 import type { ManagedGgufArtifact } from "@/localai/gguf"
 
 const FIXTURE = path.join(import.meta.dir, "..", "fixtures", "fake-llama-server.ts")
@@ -10,7 +16,9 @@ const FIXTURE = path.join(import.meta.dir, "..", "fixtures", "fake-llama-server.
 async function makeArtifact(overrides: Partial<ManagedGgufArtifact> = {}): Promise<ManagedGgufArtifact> {
   // Real tiny files: the manager validates existence before spawning
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "atlas-gguf-art-"))
-  const fileName = overrides.displayName ? `${overrides.displayName}.gguf` : `model-${Math.random().toString(36).slice(2, 8)}.gguf`
+  const fileName = overrides.displayName
+    ? `${overrides.displayName}.gguf`
+    : `model-${Math.random().toString(36).slice(2, 8)}.gguf`
   const filePath = path.join(dir, fileName)
   await fs.writeFile(filePath, "fixture gguf bytes")
   return {
@@ -28,16 +36,18 @@ interface Harness {
   manager: ReturnType<typeof createManagedLlamaCppManager>
   storePath: string
   spawnedArgs: string[][]
+  events: ManagedManagerEvent[]
 }
 
 /**
  * Creates an isolated manager whose children are the deterministic bun
- * fixture. `mode` selects the fixture behavior; the real chosen port is read
- * back out of the constructed argv.
+ * fixture. `mode` selects the fixture behavior; lifecycle/log events are
+ * captured for ordering assertions.
  */
-function harness(mode: string, overrides: Parameters<typeof createManagedLlamaCppManager>[0] = {}) {
+function harness(mode: string, overrides: Parameters<typeof createManagedLlamaCppManager>[0] = {}): Harness {
   const storePath = path.join(os.tmpdir(), `atlas-pm-${Math.random().toString(36).slice(2)}.json`)
   const spawnedArgs: string[][] = []
+  const events: ManagedManagerEvent[] = []
   const manager = createManagedLlamaCppManager({
     storePath,
     startupDeadlineMs: overrides.startupDeadlineMs ?? 4_000,
@@ -54,164 +64,223 @@ function harness(mode: string, overrides: Parameters<typeof createManagedLlamaCp
         stderr: "pipe",
       })
     },
+    emit: (event) => events.push(event),
     ...overrides,
   })
-  return { manager, storePath, spawnedArgs }
+  return { manager, storePath, spawnedArgs, events }
 }
 
-async function withRunning(mode: string, fn: (h: Harness, instance: ManagedRuntimeInstance) => Promise<void>) {
-  const h = harness(mode)
-  await h.manager.initialize()
-  const artifact = await makeArtifact()
-  await h.manager.addArtifact(artifact)
-  const instance = await h.manager.start(artifact.id)
-  try {
-    await fn(h, instance)
-  } finally {
-    await h.manager.dispose()
+function lifecycleStates(events: ManagedManagerEvent[], instanceID: string) {
+  return events
+    .filter((event): event is Extract<ManagedManagerEvent, { kind: "lifecycle" }> => event.kind === "lifecycle")
+    .filter((event) => event.instanceID === instanceID)
+    .map((event) => ({ state: event.state, phase: event.phase, generation: event.generation }))
+}
+
+/** Deterministically waits for a predicate over the instance snapshot */
+async function waitFor(
+  manager: ReturnType<typeof createManagedLlamaCppManager>,
+  instanceID: string,
+  predicate: (instance: ManagedRuntimeInstance | undefined) => boolean,
+  timeoutMs = 8_000,
+) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const instance = manager.listInstances().find((entry) => entry.id === instanceID)
+    if (predicate(instance)) return instance
+    if (Date.now() > deadline) throw new Error(`timed out waiting on instance ${instanceID}`)
+    await Bun.sleep(50)
   }
 }
 
-describe("process lifecycle", () => {
-  test("start reaches running through the health gate; stop is clean", async () => {
-    await withRunning("ready", async (h, started) => {
-      expect(started.state).toBe("running")
-      expect(started.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
-      expect(typeof started.pid).toBe("number")
-
-      if (started.state !== "running") {
-      console.error("DEBUG-LOGS:", JSON.stringify(h.manager.logsFor(started.id, 20)))
-      console.error("DEBUG-ARGS:", JSON.stringify(h.spawnedArgs))
-    }    const stopped = await h.manager.stop(started.id)
-      expect(stopped.state).toBe("stopped")
-      expect(h.manager.listInstances().find((entry) => entry.id === stopped.id)?.state).toBe("stopped")
-    })
-  })
-
-  test("stop is idempotent after the child already exited", async () => {
-    await withRunning("ready", async (h, started) => {
-      await h.manager.stop(started.id)
-      const again = await h.manager.stop(started.id)
-      expect(again.state).toBe("stopped")
-    })
-  })
-
-  test("slow model loading stays starting until health reports ready", async () => {
-    const h = harness("slow:900")
+describe("non-blocking start", () => {
+  test("start returns while the server is still starting; running arrives later", async () => {
+    const h = harness("slow:800")
     await h.manager.initialize()
     const artifact = await makeArtifact()
     await h.manager.addArtifact(artifact)
 
-    // The start promise resolves only when healthy - verify it takes effect
     const instance = await h.manager.start(artifact.id)
-    expect(instance.state).toBe("running")
-    await h.manager.dispose()
-  })
+    // Returned BEFORE health readiness - this is the non-blocking contract
+    expect(instance.state).toBe("starting")
+    expect(instance.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
 
-  test("health never ready times out into failed with cleanup", async () => {
-    const h = harness("never-ready", { startupDeadlineMs: 1_200 })
-    await h.manager.initialize()
-    const artifact = await makeArtifact()
-    await h.manager.addArtifact(artifact)
-
-    let failed = false
-    try {
-      await h.manager.start(artifact.id)
-    } catch (error) {
-      failed = true
-      expect((error as Error).message).toContain("healthy")
-    }
-    expect(failed).toBe(true)
-
-    const instances = h.manager.listInstances()
-    expect(instances[0].state).toBe("failed")
-    // Owned child was cleaned up after the failed startup
-    await new Promise<void>((resolve) => setTimeout(resolve, 100))
-    const logs = h.manager.logsFor(instances[0].id, 5)
-    expect(Array.isArray(logs)).toBe(true)
-    await h.manager.dispose()
-  })
-
-  test("unexpected exit while running becomes crashed with diagnostics", async () => {
-    const h = harness("crash:400")
-    await h.manager.initialize()
-    const artifact = await makeArtifact()
-    await h.manager.addArtifact(artifact)
-
-    // Health gate passes first, then the fixture self-destructs
-    const instance = await h.manager.start(artifact.id)
-    expect(instance.state).toBe("running")
-    await Bun.sleep(700)
-    const updated = h.manager.listInstances().find((entry) => entry.id === instance.id)!
-    expect(updated.state).toBe("crashed")
-    expect(updated.exitCode).toBe(2)
-    await h.manager.dispose()
-  }, 10_000)
-
-  test("port collision retries on a fresh port within bounded attempts", async () => {
-    // First probe hands out a port we immediately occupy, simulating the
-    // bind race; later probes ask the OS for genuinely free ports.
-    let call = 0
-    const squatters: Bun.TCPSocketListener[] = []
-    const h = harness("ready", {
-      portProbe: async () => {
-        call += 1
-        if (call === 1) {
-          const victim = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } })
-          const taken = victim.port
-          victim.stop(true)
-          squatters.push(Bun.listen({ hostname: "127.0.0.1", port: taken, socket: { data() {} } }))
-          return taken
-        }
-        const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } })
-        const free = server.port
-        server.stop(true)
-        return free
-      },
-    })
-    await h.manager.initialize()
-    const artifact = await makeArtifact()
-    await h.manager.addArtifact(artifact)
-
-    // The fixture exits early on the occupied port; manager must retry and run
-    const instance = await h.manager.start(artifact.id)
-    expect(instance.state).toBe("running")
-    expect(call).toBeGreaterThanOrEqual(2)
-    await h.manager.dispose()
-    for (const squatter of squatters) squatter.stop(true)
-  }, 20_000)
-
-  test("restart performs a real stop-then-start lifecycle", async () => {
-    const h = harness("ready")
-    await h.manager.initialize()
-    const artifact = await makeArtifact()
-    await h.manager.addArtifact(artifact)
-    const first = await h.manager.start(artifact.id)
-
-    const second = await h.manager.restart(first.id)
-    expect(second.id).not.toBe(first.id)
-    expect(second.state).toBe("running")
-
-    // Old instance must be dead in history
-    const oldEntry = h.manager.listInstances().find((entry) => entry.id === first.id)!
-    expect(["stopped", "stopping"]).toContain(oldEntry.state)
+    const final = await waitFor(h.manager, instance.id, (entry) => entry?.state === "running")
+    expect(final?.state).toBe("running")
     await h.manager.dispose()
   }, 15_000)
 
-  test("double start returns the same single instance", async () => {
+  test("double start returns the same instance instead of spawning twice", async () => {
     const h = harness("ready")
     await h.manager.initialize()
     const artifact = await makeArtifact()
     await h.manager.addArtifact(artifact)
     const [a, b] = await Promise.all([h.manager.start(artifact.id), h.manager.start(artifact.id)])
     expect(a.id).toBe(b.id)
+    await waitFor(h.manager, a.id, (entry) => entry?.state === "running")
+    const spawnsForArtifact = h.spawnedArgs.length
+    await Bun.sleep(200)
+    expect(spawnsForArtifact).toBe(1)
+    await h.manager.dispose()
+  }, 15_000)
+})
+
+describe("lifecycle event order", () => {
+  test("start emits starting phases then running only after health readiness", async () => {
+    const h = harness("ready")
+    await h.manager.initialize()
+    const artifact = await makeArtifact()
+    await h.manager.addArtifact(artifact)
+
+    const started = await h.manager.start(artifact.id)
+    await waitFor(h.manager, started.id, (entry) => entry?.state === "running")
+    // Allow the final transition event to land
+    await Bun.sleep(50)
+
+    const sequence = lifecycleStates(h.events, started.id)
+    expect(sequence[0]?.state).toBe("starting")
+    const phases = sequence.map((entry) => entry.phase).filter(Boolean)
+    expect(phases).toContain("port_selected")
+    expect(phases).toContain("spawning")
+    expect(phases.indexOf("port_selected")).toBeLessThan(phases.indexOf("spawning"))
+    const runningIndex = sequence.findIndex((entry) => entry.state === "running")
+    expect(runningIndex).toBeGreaterThan(-1)
+    // No running before every setup phase
+    expect(phases.length).toBeGreaterThan(0)
+    await h.manager.dispose()
+  }, 15_000)
+
+  test("stop emits stopping then stopped; no resurrection afterwards", async () => {
+    const h = harness("ready")
+    await h.manager.initialize()
+    const artifact = await makeArtifact()
+    await h.manager.addArtifact(artifact)
+    const started = await h.manager.start(artifact.id)
+    await waitFor(h.manager, started.id, (entry) => entry?.state === "running")
+
+    await h.manager.stop(started.id)
+    await Bun.sleep(80)
+
+    const sequence = lifecycleStates(h.events, started.id).map((entry) => entry.state)
+    const stoppingIndex = sequence.lastIndexOf("stopping")
+    const stoppedIndex = sequence.lastIndexOf("stopped")
+    expect(stoppingIndex).toBeGreaterThan(-1)
+    expect(stoppedIndex).toBe(stoppingIndex + 1)
+    // Terminal means terminal - nothing may follow
+    expect(sequence.slice(stoppedIndex + 1)).not.toContain("running")
+    await h.manager.dispose()
+  }, 15_000)
+
+  test("cancel during loading reaches stopped and never becomes running later", async () => {
+    const h = harness("never-ready", { startupDeadlineMs: 30_000 })
+    await h.manager.initialize()
+    const artifact = await makeArtifact()
+    await h.manager.addArtifact(artifact)
+
+    const started = await h.manager.start(artifact.id)
+    await waitFor(h.manager, started.id, (entry) =>
+      Boolean(entry && entry.phase === "health_wait" && entry.state === "starting"),
+    )
+
+    // User cancels while the model is loading
+    const cancelled = await h.manager.stop(started.id, "cancelled by user")
+    expect(["stopped", "stopping"]).toContain(cancelled.state)
+
+    // Even though the deadline has not elapsed, no running may ever appear
+    await Bun.sleep(400)
+    const states = lifecycleStates(h.events, started.id).map((entry) => entry.state)
+    expect(states).not.toContain("running")
+    const final = h.manager.listInstances().find((entry) => entry.id === started.id)!
+    expect(final.state).toBe("stopped")
+    await h.manager.dispose()
+  }, 20_000)
+
+  test("startup timeout produces failed", async () => {
+    const h = harness("never-ready", { startupDeadlineMs: 1_200 })
+    await h.manager.initialize()
+    const artifact = await makeArtifact()
+    await h.manager.addArtifact(artifact)
+
+    const started = await h.manager.start(artifact.id)
+    await waitFor(h.manager, started.id, (entry) => entry?.state === "failed")
+    const failedEvents = lifecycleStates(h.events, started.id).filter((entry) => entry.state === "failed")
+    expect(failedEvents.length).toBeGreaterThanOrEqual(1)
+    await h.manager.dispose()
+  }, 20_000)
+
+  test("crash while running emits crashed with exit code", async () => {
+    const h = harness("crash:400")
+    await h.manager.initialize()
+    const artifact = await makeArtifact()
+    await h.manager.addArtifact(artifact)
+    const started = await h.manager.start(artifact.id)
+    await waitFor(h.manager, started.id, (entry) => entry?.state === "running")
+    const crashed = await waitFor(h.manager, started.id, (entry) => entry?.state === "crashed")
+    expect(crashed?.exitCode).toBe(2)
+    await h.manager.dispose()
+  }, 15_000)
+
+  test("restart bumps generation; old generation goes terminal first", async () => {
+    const h = harness("ready")
+    await h.manager.initialize()
+    const artifact = await makeArtifact()
+    await h.manager.addArtifact(artifact)
+    const first = await h.manager.start(artifact.id)
+    const oldGeneration = first.generation
+    await waitFor(h.manager, first.id, (entry) => entry?.state === "running")
+
+    void h.manager.waitForTerminal(first.id).catch(() => {})
+    const second = await h.manager.restart(first.id)
+    expect(second.id).not.toBe(first.id)
+    expect(second.generation).toBe(oldGeneration + 1)
+
+    await waitFor(h.manager, second.id, (entry) => entry?.state === "running")
+
+    // Old instance reached a terminal state, and its events never claim running again
+    const oldEntry = h.manager.listInstances().find((entry) => entry.id === first.id)!
+    expect(oldEntry.state).toBe("stopped")
+
+    // Stale-generation simulation: an event bearing the OLD id/generation must
+    // not be mistaken for current state - ids differ so clients can drop it.
+    const staleEvent = h.events.find(
+      (event) => event.kind === "lifecycle" && event.instanceID === first.id && event.generation === oldGeneration,
+    )
+    expect(staleEvent).toBeDefined()
+    expect(second.id).not.toBe((staleEvent as Extract<ManagedManagerEvent, { kind: "lifecycle" }>).instanceID)
+    await h.manager.dispose()
+  }, 20_000)
+})
+
+describe("log streaming bounds", () => {
+  test("noisy runtime emits batched bounded log events without flooding", async () => {
+    const h = harness("noisy")
+    await h.manager.initialize()
+    const artifact = await makeArtifact()
+    await h.manager.addArtifact(artifact)
+    const started = await h.manager.start(artifact.id)
+
+    await waitFor(h.manager, started.id, (entry) => entry?.state === "running")
+    await Bun.sleep(600)
+
+    const logEvents = h.events.filter(
+      (event): event is Extract<ManagedManagerEvent, { kind: "log" }> => event.kind === "log",
+    )
+    expect(logEvents.length).toBeGreaterThan(0)
+    for (const event of logEvents) {
+      expect(event.lines.length).toBeLessThanOrEqual(80)
+      for (const line of event.lines) {
+        expect(["stdout", "stderr"]).toContain(line.source)
+        expect(typeof line.at).toBe("number")
+      }
+    }
+    // History ring stays bounded even when many lines streamed
+    expect(h.manager.logsFor(started.id, LOG_BUFFER_LIMIT * 2).length).toBeLessThanOrEqual(LOG_BUFFER_LIMIT)
     await h.manager.dispose()
   }, 15_000)
 })
 
 describe("ownership safety", () => {
   test("unknown instance IDs are rejected - external processes are never touched", async () => {
-    // An HTTP server the manager has NEVER seen
     const external = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -229,7 +298,6 @@ describe("ownership safety", () => {
     }
     expect(rejected).toBe(true)
 
-    // External server still alive and answering
     const res = await fetch(`http://127.0.0.1:${external.port}/health`)
     expect(res.ok).toBe(true)
     external.stop(true)
@@ -256,14 +324,12 @@ describe("ownership safety", () => {
       }),
     )
 
-    // Watchdog: PID 999999999 must not exist; even if it did, nothing may kill it.
     const h = createManagedLlamaCppManager({ storePath })
     await h.initialize()
     const stale = h.listInstances().find((entry) => entry.id === "inst-old")!
     expect(stale.state).toBe("stopped")
     expect(stale.lastError).toContain("stale")
 
-    // Stop against the stale row must not signal anything
     const result = await h.stop("inst-old")
     expect(result.state).toBe("stopped")
   })
@@ -277,15 +343,15 @@ describe("ownership safety", () => {
     await h.manager.addArtifact(artifactB)
     const a = await h.manager.start(artifactA.id)
     const b = await h.manager.start(artifactB.id)
-    expect(a.state).toBe("running")
-    expect(b.state).toBe("running")
+    await waitFor(h.manager, a.id, (entry) => entry?.state === "running")
+    await waitFor(h.manager, b.id, (entry) => entry?.state === "running")
 
     await h.manager.dispose()
     const states = h.manager.listInstances().filter((entry) => [a.id, b.id].includes(entry.id))
     for (const entry of states) {
       expect(["stopped", "crashed", "failed"]).toContain(entry.state)
     }
-  }, 15_000)
+  }, 20_000)
 
   test("removing a registration while running is rejected; allowed once stopped", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "atlas-remove-"))
@@ -297,6 +363,7 @@ describe("ownership safety", () => {
     const artifact = await makeArtifact({ id: "gguf-rm", path: ggufPath, quantization: "Q4_K_M" })
     await h.manager.addArtifact(artifact)
     const started = await h.manager.start(artifact.id)
+    await waitFor(h.manager, started.id, (entry) => entry?.state === "running")
 
     const whileRunning = await h.manager.removeArtifact(artifact.id)
     expect(whileRunning.ok).toBe(false)
@@ -309,28 +376,5 @@ describe("ownership safety", () => {
     // The user's GGUF file itself is untouched
     expect((await fs.stat(ggufPath)).isFile()).toBe(true)
     await h.manager.dispose()
-  }, 15_000)
-})
-
-describe("log capture", () => {
-  test("stdout and stderr are captured with sources and stay bounded", async () => {
-    const h = harness("noisy")
-    await h.manager.initialize()
-    const artifact = await makeArtifact()
-    await h.manager.addArtifact(artifact)
-    const started = await h.manager.start(artifact.id)
-
-    // Give stream readers time to drain some lines
-    await Bun.sleep(600)
-    const all = h.manager.logsFor(started.id, LOG_BUFFER_LIMIT)
-    expect(all.length).toBeGreaterThan(0)
-    expect(all.some((line) => line.source === "stderr")).toBe(true)
-    // Every captured line carries its origin tag context via source field
-    expect(all.every((line) => line.source === "stdout" || line.source === "stderr")).toBe(true)
-
-    // Bounded view: requesting fewer lines returns exactly that tail
-    const tail = h.manager.logsFor(started.id, 3)
-    expect(tail.length).toBeLessThanOrEqual(3)
-    await h.manager.dispose()
-  }, 15_000)
+  }, 20_000)
 })

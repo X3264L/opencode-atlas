@@ -3,6 +3,7 @@ import type { JSX } from "solid-js"
 import { DialogSelect } from "../ui/dialog-select"
 import { DialogPrompt } from "../ui/dialog-prompt"
 import { useDialog } from "../ui/dialog"
+import { useEvent } from "../context/event"
 import { useToast } from "../ui/toast"
 import { useSDK } from "../context/sdk"
 import { useLocal } from "../context/local"
@@ -84,6 +85,7 @@ export function DialogLocalAi() {
   const sdk = useSDK()
   const dialog = useDialog()
   const toast = useToast()
+  const event = useEvent()
   const [state, setState] = createSignal<LocalAiState>()
   const [managed, setManaged] = createSignal<LocalAiManagedArtifact[]>()
   const [executable, setExecutable] = createSignal<{ found: boolean; path?: string; reason?: string }>()
@@ -110,6 +112,48 @@ export function DialogLocalAi() {
 
   onMount(() => void load(PRESETS[presetIndex()].id))
   const refresh = () => void load(PRESETS[presetIndex()].id)
+
+  // Reactive control plane: lifecycle events patch managed rows in place;
+  // anything broader triggers one coalesced authoritative refetch.
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleRefresh = () => {
+    if (refreshTimer) return
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined
+      refresh()
+    }, 250)
+  }
+
+  onMount(() => {
+    const disposers = [
+      event.on("localai.instance.lifecycle", (payload) => {
+        const list = managed()
+        if (!list) return
+        const entry = list.find((item) => item.artifact.id === payload.properties.artifactID)
+        if (!entry) {
+          scheduleRefresh()
+          return
+        }
+        const terminalOrRunning =
+          payload.properties.state === "running" || ["stopped", "crashed", "failed"].includes(payload.properties.state)
+        entry.instance =
+          terminalOrRunning || payload.properties.state === "starting" || payload.properties.state === "stopping"
+            ? {
+                id: payload.properties.instanceID,
+                artifactID: payload.properties.artifactID ?? entry.artifact.id,
+                state: payload.properties.state,
+                ...(entry.instance?.endpoint ? { endpoint: entry.instance.endpoint } : {}),
+              }
+            : undefined
+        setManaged([...list])
+      }),
+      event.on("localai.managed.artifact", () => scheduleRefresh()),
+      event.on("localai.health.changed", () => scheduleRefresh()),
+      event.on("localai.executable.changed", () => scheduleRefresh()),
+      event.on("localai.provider.changed", () => scheduleRefresh()),
+    ]
+    onCleanup(() => disposers.forEach((dispose) => dispose()))
+  })
 
   const cyclePreset = async () => {
     const next = (presetIndex() + 1) % PRESETS.length
@@ -191,6 +235,9 @@ export function DialogLocalAi() {
         executable={executable()}
         onRemoved={async () => {
           dialog.replace(() => <DialogLocalAi />)
+          await load(PRESETS[presetIndex()].id)
+        }}
+        onLeave={async () => {
           await load(PRESETS[presetIndex()].id)
         }}
       />
@@ -406,21 +453,6 @@ export function DialogLocalAi() {
       </Match>
     </Switch>
   )
-}
-
-function pollJob(sdk: ReturnType<typeof useSDK>["client"], jobID: string, onUpdate: (job: LocalAiJob) => void) {
-  let stopped = false
-  const timer = setInterval(async () => {
-    if (stopped) return
-    try {
-      const result = await sdk.localai.job.get({ jobID })
-      if (result.data && !stopped) onUpdate(result.data)
-    } catch {}
-  }, 700)
-  return () => {
-    stopped = true
-    clearInterval(timer)
-  }
 }
 
 function ProgressBar(props: { percent: number }) {
@@ -743,19 +775,54 @@ function LocalAiManagedDetails(props: {
   artifact: LocalAiManagedArtifact
   executable?: { found: boolean; path?: string; reason?: string }
   onRemoved: () => Promise<void>
+  onLeave?: () => Promise<void>
 }) {
   const sdk = useSDK()
   const dialog = useDialog()
   const toast = useToast()
+  const event = useEvent()
   const { theme } = useTheme()
   const [busy, setBusy] = createSignal<string>()
   const [instance, setInstance] = createSignal(props.artifact.instance)
+  // Live log tail: initial history once, then appended from log events
+  const [view, setView] = createSignal<"details" | "logs">("details")
+  const [logLines, setLogLines] = createSignal<{ at: number; source: string; line: string }[]>([])
+  const instanceID = () => instance()?.id
+
+  onMount(() => {
+    const dispose = event.on("localai.instance.log", (payload) => {
+      if (view() !== "logs" || payload.properties.instanceID !== instanceID()) return
+      setLogLines((current) => {
+        const incoming: { at: number; source: string; line: string }[] = []
+        for (const line of payload.properties.lines) {
+          const at = num(line.at)
+          if (at !== undefined) incoming.push({ at, source: line.source, line: line.line })
+        }
+        const next = [...current, ...incoming]
+        return next.length > 400 ? next.slice(-400) : next
+      })
+    })
+    onCleanup(dispose)
+    // Live lifecycle events keep the state label current
+    const lifecycle = event.on("localai.instance.lifecycle", (payload) => {
+      if (payload.properties.instanceID !== instanceID()) return
+      setInstance((current) =>
+        current ? { ...current, state: payload.properties.state, ...(payload.properties.reason ? { lastError: payload.properties.reason } : {}) } : current,
+      )
+    })
+    onCleanup(lifecycle)
+  })
 
   const artifactID = () => props.artifact.artifact.id
   const running = () => instance()?.state === "running" || instance()?.state === "starting"
 
   const back = async () => {
+    if (view() === "logs") {
+      setView("details")
+      return
+    }
     dialog.replace(() => <DialogLocalAi />)
+    await props.onLeave?.()
   }
 
   const runLifecycle = async (action: "start" | "stop" | "restart") => {
@@ -800,40 +867,27 @@ function LocalAiManagedDetails(props: {
     setBusy("logs")
     try {
       const result = await sdk.client.localai.managed.logs({ instanceID: instance()!.id })
-      const lines: string[] = (result.data as LocalAiManagedLogs | undefined)?.lines.map(
-        (line) => `[${new Date(line.at).toLocaleTimeString()}] [${line.source}] ${line.line}`,
-      ) ?? ["No logs captured yet"]
-      dialog.replace(() => (
-        <DialogSelect
-          title={`llama.cpp logs`}
-          options={lines.slice(-60).map((line) => ({ title: line, value: {}, disabled: true }))}
-          actions={[
-            {
-              command: "local.ai.back",
-              title: "Back",
-          onTrigger: () =>
-            dialog.replace(() => (
-              <LocalAiManagedDetails
-                artifact={props.artifact}
-                executable={props.executable}
-                onRemoved={props.onRemoved}
-              />
-            )),
-            },
-          ]}
-          footer={
-            <box paddingBottom={1}>
-              <text style={{ fg: theme.textMuted }}>Last captured lines from the Atlas-owned process.</text>
-            </box>
-          }
-        />
-      ))
+      const incoming: { at: number; source: string; line: string }[] = []
+      for (const line of (result.data as LocalAiManagedLogs | undefined)?.lines ?? []) {
+        const at = num(line.at)
+        if (at !== undefined) incoming.push({ at, source: line.source, line: line.line })
+      }
+      setLogLines(incoming)
+      setView("logs")
     } finally {
       setBusy(undefined)
     }
   }
 
+  const logRows = () =>
+    logLines().slice(-60).map((entry) => ({
+      title: `[${new Date(entry.at).toLocaleTimeString()}] [${entry.source}] ${entry.line}`,
+      value: {},
+      disabled: true,
+    }))
+
   const rows = () => {
+    if (view() === "logs") return logRows()
     const info = [
       {
         title: !props.artifact.fileExists ? "Missing file" : (instance()?.state ?? "Stopped"),
@@ -890,12 +944,16 @@ function LocalAiManagedDetails(props: {
 
   return (
     <DialogSelect
-      title={props.artifact.artifact.displayName}
+      title={view() === "logs" ? "llama.cpp logs" : props.artifact.artifact.displayName}
       options={rows()}
       footer={
         <box paddingBottom={1}>
           <text style={{ fg: theme.textMuted }}>
-            {running() ? `Owned process · ${instance()?.endpoint}` : "Atlas manages the process lifecycle only"}
+            {view() === "logs"
+              ? "Live tail of the Atlas-owned process."
+              : running()
+                ? `Owned process · ${instance()?.endpoint}`
+                : "Atlas manages the process lifecycle only"}
           </text>
         </box>
       }
@@ -964,14 +1022,33 @@ function LocalAiInstallProgress(props: { jobID: string; modelTag?: string }) {
   const sdk = useSDK()
   const dialog = useDialog()
   const local = useLocal()
+  const event = useEvent()
   const { theme } = useTheme()
   const [job, setJob] = createSignal<LocalAiJob>()
 
+  // Authoritative snapshot first, then live deltas from the event stream
   onMount(() => {
-    const stop = pollJob(sdk.client, props.jobID, (value) => {
-      setJob(value)
-      if (value.state !== "running") stop()
-      if (value.state === "done") {
+    void sdk.client.localai.job.get({ jobID: props.jobID }).then((result) => {
+      if (result.data) setJob(result.data)
+    })
+    const dispose = event.on("localai.install.status", (payload) => {
+      if (payload.properties.jobID !== props.jobID) return
+      const status = payload.properties.status
+      setJob((previous) => ({
+        ...(previous ?? { id: props.jobID, kind: "install" as const, state: "running" as const, startedAt: Date.now() }),
+        state:
+          status === "completed"
+            ? "done"
+            : status === "cancelled"
+              ? "cancelled"
+              : status === "failed"
+                ? "error"
+                : "running",
+        percent: payload.properties.percent,
+        status: payload.properties.message,
+        error: payload.properties.error,
+      }))
+      if (status === "completed") {
         setTimeout(() => {
           const modelTag = props.modelTag
           if (modelTag) {
@@ -981,7 +1058,7 @@ function LocalAiInstallProgress(props: { jobID: string; modelTag?: string }) {
         }, 900)
       }
     })
-    onCleanup(stop)
+    onCleanup(dispose)
   })
 
   const statusText = () => {
@@ -1059,15 +1136,66 @@ function LocalAiInstallProgress(props: { jobID: string; modelTag?: string }) {
 function LocalAiJobProgress(props: { jobID: string; kind: "benchmark" | "readiness"; onDone: () => void }) {
   const sdk = useSDK()
   const dialog = useDialog()
+  const event = useEvent()
   const { theme } = useTheme()
   const [job, setJob] = createSignal<LocalAiJob>()
+  // Live readiness checks accumulate as check_completed events arrive
+  const [liveChecks, setLiveChecks] = createSignal<{ id: string; label: string; pass: boolean }[]>([])
+  const [liveScore, setLiveScore] = createSignal<number>()
 
   onMount(() => {
-    const stop = pollJob(sdk.client, props.jobID, (value) => {
-      setJob(value)
-      if (value.state !== "running") stop()
+    // Authoritative snapshot once, then live deltas from the event stream
+    void sdk.client.localai.job.get({ jobID: props.jobID }).then((result) => {
+      if (result.data) setJob(result.data)
     })
-    onCleanup(stop)
+    const disposers = [
+      event.on("localai.benchmark.status", (payload) => {
+        if (payload.properties.status === "started") return
+        setJob((previous) => ({
+          ...(previous ?? { id: props.jobID, kind: "benchmark" as const, state: "running" as const, startedAt: Date.now() }),
+          state:
+            payload.properties.status === "completed"
+              ? "done"
+              : payload.properties.status === "cancelled"
+                ? "cancelled"
+                : payload.properties.status === "failed"
+                  ? "error"
+                  : "running",
+          error: payload.properties.error,
+          result:
+            payload.properties.status === "completed"
+              ? {
+                  success: true,
+                  tokensPerSecond: payload.properties.tokensPerSecond,
+                  promptTokensPerSecond: payload.properties.promptTokensPerSecond,
+                  timeToFirstTokenMs: payload.properties.timeToFirstTokenMs,
+                }
+              : previous?.result,
+        }))
+      }),
+      event.on("localai.readiness.status", (payload) => {
+        if (payload.properties.status === "check_completed" && payload.properties.check) {
+          const check = payload.properties.check
+          setLiveChecks((current) => [...current.filter((entry) => entry.id !== check.id), check])
+          return
+        }
+        if (payload.properties.status === "started") return
+        setJob((previous) => ({
+          ...(previous ?? { id: props.jobID, kind: "readiness" as const, state: "running" as const, startedAt: Date.now() }),
+          state:
+            payload.properties.status === "completed"
+              ? "done"
+              : payload.properties.status === "cancelled"
+                ? "cancelled"
+                : payload.properties.status === "failed"
+                  ? "error"
+                  : "running",
+          error: payload.properties.error,
+        }))
+        if (payload.properties.score !== undefined) setLiveScore(num(payload.properties.score))
+      }),
+    ]
+    onCleanup(() => disposers.forEach((dispose) => dispose()))
   })
 
   const readiness = () => {
@@ -1084,6 +1212,21 @@ function LocalAiJobProgress(props: { jobID: string; kind: "benchmark" | "readine
   const rows = createMemo(() => {
     const value = job()
     if (!value || value.state === "running") {
+      // Live readiness checks appear as the underlying probes complete
+      if (props.kind === "readiness" && liveChecks().length > 0) {
+        return [
+          ...liveChecks().map((check) => ({
+            title: check.pass ? `✓ ${check.label}` : `○ ${check.label}`,
+            value: {},
+            disabled: true,
+          })),
+          {
+            title: "Testing agent compatibility...",
+            value: {},
+            disabled: true,
+          },
+        ]
+      }
       return [
         {
           title: props.kind === "benchmark" ? "Measuring generation speed..." : "Testing agent compatibility...",
@@ -1095,6 +1238,9 @@ function LocalAiJobProgress(props: { jobID: string; kind: "benchmark" | "readine
     }
     if (value.state === "error") {
       return [{ title: `✗ ${value.error ?? "Failed"}`, value: {}, disabled: true }]
+    }
+    if (value.state === "cancelled") {
+      return [{ title: "Cancelled", value: {}, disabled: true }]
     }
 
     if (props.kind === "readiness" && readiness()?.checks) {
@@ -1140,7 +1286,10 @@ function LocalAiJobProgress(props: { jobID: string; kind: "benchmark" | "readine
     ]
   })
 
-  const finished = () => job()?.state === "done" || job()?.state === "error"
+  const finished = () => {
+    const state = job()?.state
+    return state === "done" || state === "error" || state === "cancelled"
+  }
 
   return (
     <DialogSelect
