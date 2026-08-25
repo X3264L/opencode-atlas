@@ -27,6 +27,14 @@ const RUNTIME_NAMES: Record<string, string> = {
 
 const PREFERENCE_CYCLE = ["auto", "ollama", "lmstudio", "llamacpp", "mlx"] as const
 
+const ROUTING_MODES = ["auto", "local", "hybrid", "cloud"] as const
+const ROUTING_LABELS: Record<string, string> = {
+  auto: "Auto",
+  local: "Local",
+  hybrid: "Hybrid",
+  cloud: "Cloud",
+}
+
 type Preset = NonNullable<Parameters<ReturnType<typeof useSDK>["client"]["localai"]["state"]>[0]>["preset"]
 
 // Generated SDK types encode JSON numbers as number | "-Infinity" | "NaN";
@@ -169,6 +177,23 @@ export function DialogLocalAi() {
       await sdk.client.localai.preference.set({ localAiPreferenceInput: { runtime: next } })
     } catch {}
     await load(PRESETS[presetIndex()].id)
+  }
+
+  const [routingMode, setRoutingMode] = createSignal<string>("auto")
+
+  onMount(() => {
+    void sdk.client.atlas.routing.state().then((result) => {
+      if (result.data) setRoutingMode(result.data.mode)
+    })
+  })
+
+  const cycleRoutingMode = async () => {
+    const index = ROUTING_MODES.indexOf(routingMode() as (typeof ROUTING_MODES)[number])
+    const next = ROUTING_MODES[(index + 1) % ROUTING_MODES.length]
+    try {
+      const result = await sdk.client.atlas.routing.mode({ atlasRoutingModeInput: { mode: next } })
+      if (result.data) setRoutingMode(result.data.mode)
+    } catch {}
   }
 
   const openRecommendation = (recommendation: LocalAiRecommendation) => {
@@ -420,6 +445,12 @@ export function DialogLocalAi() {
               title: `Runtime: ${RUNTIME_NAMES[state()?.preference ?? "auto"] ?? state()?.preference ?? "auto"}`,
               side: "right",
               onTrigger: () => void cyclePreference(),
+            },
+            {
+              command: "local.ai.routing",
+              title: `Routing: ${ROUTING_LABELS[routingMode()] ?? routingMode()}`,
+              side: "right",
+              onTrigger: () => void cycleRoutingMode(),
             },
             {
               command: "local.ai.import-gguf",

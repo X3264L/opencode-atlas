@@ -10,6 +10,14 @@ import type {
   AppLogResponses,
   AppSkillsErrors,
   AppSkillsResponses,
+  AtlasRoutingDecideErrors,
+  AtlasRoutingDecideInput,
+  AtlasRoutingDecideResponses,
+  AtlasRoutingModeErrors,
+  AtlasRoutingModeInput,
+  AtlasRoutingModeResponses,
+  AtlasRoutingStateErrors,
+  AtlasRoutingStateResponses,
   Auth as Auth3,
   AuthRemoveErrors,
   AuthRemoveResponses,
@@ -2876,6 +2884,119 @@ export class Localai extends HeyApiClient {
   private _managed?: Managed
   get managed(): Managed {
     return (this._managed ??= new Managed({ client: this.client }))
+  }
+}
+
+export class Routing extends HeyApiClient {
+  /**
+   * Get routing mode
+   *
+   * Returns the persisted Atlas routing mode (auto/local/hybrid/cloud).
+   */
+  public state<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<AtlasRoutingStateResponses, AtlasRoutingStateErrors, ThrowOnError>({
+      url: "/router/state",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Set routing mode
+   *
+   * Persists the routing mode. Manual concrete model selection still overrides routing for that request.
+   */
+  public mode<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      atlasRoutingModeInput?: AtlasRoutingModeInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "atlasRoutingModeInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AtlasRoutingModeResponses, AtlasRoutingModeErrors, ThrowOnError>({
+      url: "/router/mode",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Resolve execution path
+   *
+   * Runs the deterministic Atlas router over current local/cloud candidates and returns the selected provider/model with reason codes, alternatives, and a bounded fallback plan. Never executes inference.
+   */
+  public decide<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      atlasRoutingDecideInput?: AtlasRoutingDecideInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "atlasRoutingDecideInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AtlasRoutingDecideResponses, AtlasRoutingDecideErrors, ThrowOnError>({
+      url: "/router/decide",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Atlas extends HeyApiClient {
+  private _routing?: Routing
+  get routing(): Routing {
+    return (this._routing ??= new Routing({ client: this.client }))
   }
 }
 
@@ -7792,6 +7913,11 @@ export class OpencodeClient extends HeyApiClient {
   private _localai?: Localai
   get localai(): Localai {
     return (this._localai ??= new Localai({ client: this.client }))
+  }
+
+  private _atlas?: Atlas
+  get atlas(): Atlas {
+    return (this._atlas ??= new Atlas({ client: this.client }))
   }
 
   private _mcp?: Mcp

@@ -58,6 +58,7 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Npm } from "@opencode-ai/core/npm"
 import { LocalAI } from "@/localai/localai"
+import { AtlasRouter } from "@/router/index"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectCopy } from "@opencode-ai/core/project/copy"
@@ -217,6 +218,7 @@ const app = LayerNode.group([
   FSUtil.node,
   Database.node,
   LocalAI.node,
+  AtlasRouter.node,
   Auth.node,
   Account.node,
   Config.node,

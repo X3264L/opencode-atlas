@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { LocalAI } from "@/localai/localai"
+import { AtlasRouter } from "@/router/index"
 import { InstanceHttpApi } from "../api"
 import {
   InstallPayload,
@@ -15,6 +16,7 @@ import {
 export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", (handlers) =>
   Effect.gen(function* () {
     const localai = yield* LocalAI.Service
+    const router = yield* AtlasRouter.Service
 
     const mapError = (error: unknown) =>
       new LocalAiApiError({
@@ -85,7 +87,31 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
         localai.restartManaged({ instanceID: ctx.params.instanceID }).pipe(Effect.mapError(mapError)),
       )
       .handle("managedLogs", (ctx: { params: { instanceID: string } }) => localai.managedLogs({ instanceID: ctx.params.instanceID }))
-      .handle("managedExecutable", (ctx: { payload: typeof ExecutablePathPayload.Type }) =>
+      .handle("routingState", () => router.state().pipe(Effect.map(({ mode }) => ({ mode })), Effect.mapError(mapError)))
+      .handle("routingMode", (ctx: { payload: { mode: "auto" | "local" | "hybrid" | "cloud" } }) =>
+        router.setMode({ mode: ctx.payload.mode }).pipe(Effect.map((mode) => ({ mode })), Effect.mapError(mapError)),
+      )
+      .handle("routingDecide", (ctx: { payload: Record<string, unknown> }) =>
+        router
+          .decide({
+            surface: typeof ctx.payload.surface === "string" ? ctx.payload.surface : undefined,
+            estimatedInputTokens: typeof ctx.payload.estimatedInputTokens === "number" ? ctx.payload.estimatedInputTokens : undefined,
+            estimatedOutputTokens: typeof ctx.payload.estimatedOutputTokens === "number" ? ctx.payload.estimatedOutputTokens : undefined,
+            fileCount: typeof ctx.payload.fileCount === "number" ? ctx.payload.fileCount : undefined,
+            requiresTools: ctx.payload.requiresTools === true,
+            requiresStructuredOutput: ctx.payload.requiresStructuredOutput === true,
+            requiresVision: ctx.payload.requiresVision === true,
+            requiresLongContext: ctx.payload.requiresLongContext === true,
+            workspacePrivacy: (typeof ctx.payload.workspacePrivacy === "string"
+              ? (ctx.payload.workspacePrivacy as "standard" | "prefer_local" | "local_only")
+              : undefined),
+            explicitModel:
+              typeof ctx.payload.explicitProviderID === "string" && typeof ctx.payload.explicitModelID === "string"
+                ? { providerID: ctx.payload.explicitProviderID, modelID: ctx.payload.explicitModelID }
+                : undefined,
+          })
+          .pipe(Effect.mapError(mapError)),
+      )      .handle("managedExecutable", (ctx: { payload: typeof ExecutablePathPayload.Type }) =>
         localai
           .setLlamaServerExecutable({ ...(ctx.payload.path !== undefined ? { path: ctx.payload.path } : {}) })
           .pipe(

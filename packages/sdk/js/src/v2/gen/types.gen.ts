@@ -102,6 +102,8 @@ export type Event =
   | EventLocalaiReadinessStatus
   | EventLocalaiInstallStatus
   | EventLocalaiProviderChanged
+  | EventAtlasRoutingDecision
+  | EventAtlasRoutingFallback
   | EventServerInstanceDisposed
 
 export type QuestionReplied = {
@@ -1714,6 +1716,35 @@ export type GlobalEvent = {
           available: boolean
         }
       }
+    | {
+        id: string
+        type: "atlas.routing.decision"
+        properties: {
+          mode: "auto" | "local" | "hybrid" | "cloud"
+          source: "local" | "cloud" | "none"
+          providerID?: string
+          modelID?: string
+          runtimeID?: string
+          bypassed: boolean
+          confidence: "high" | "medium" | "low"
+          reasonCodes: Array<string>
+          estimatedCloudCost?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.routing.fallback"
+        properties: {
+          mode: "auto" | "local" | "hybrid" | "cloud"
+          fromSource: "local" | "cloud"
+          fromProviderID?: string
+          fromModelID?: string
+          toProviderID?: string
+          toModelID?: string
+          failureKind: string
+          reasonCodes: Array<string>
+        }
+      }
     | EventServerInstanceDisposed
     | SyncEventSessionCreated
     | SyncEventSessionUpdated
@@ -2798,6 +2829,65 @@ export type LocalAiExecutablePathInput = {
   path?: string
 }
 
+export type AtlasRoutingState = {
+  mode: "auto" | "local" | "hybrid" | "cloud"
+}
+
+export type AtlasRoutingModeInput = {
+  mode: "auto" | "local" | "hybrid" | "cloud"
+}
+
+export type AtlasRoutingDecideInput = {
+  surface?: string
+  estimatedInputTokens?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  estimatedOutputTokens?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  fileCount?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  requiresTools?: boolean
+  requiresStructuredOutput?: boolean
+  requiresVision?: boolean
+  requiresLongContext?: boolean
+  workspacePrivacy?: "standard" | "prefer_local" | "local_only"
+  explicitProviderID?: string
+  explicitModelID?: string
+}
+
+export type AtlasRoutingCandidate = {
+  source: "local" | "cloud"
+  providerID: string
+  modelID: string
+  runtimeID?: string
+  runtimeModelID?: string
+  variantID?: string
+}
+
+export type AtlasRoutingReason = {
+  code: string
+  detail?: string
+}
+
+export type AtlasRoutingAlternative = {
+  candidate: AtlasRoutingCandidate
+  score?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  rejected: boolean
+  reasons: Array<AtlasRoutingReason>
+}
+
+export type AtlasRoutingDecision = {
+  mode: "auto" | "local" | "hybrid" | "cloud"
+  selected?: AtlasRoutingCandidate
+  confidence: "high" | "medium" | "low"
+  bypassed: boolean
+  reasons: Array<AtlasRoutingReason>
+  alternatives: Array<AtlasRoutingAlternative>
+  estimatedCloudCost?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  fallbackPlan: Array<AtlasRoutingCandidate>
+  classification: {
+    taskClass: string
+    difficulty: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    reasons: Array<string>
+  }
+}
+
 export type McpStatusConnected = {
   status: "connected"
 }
@@ -3268,6 +3358,31 @@ export type QuestionRejected2 = {
   }
 }
 
+export type AtlasRoutingDecision2 = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.routing.decision"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    mode: "auto" | "local" | "hybrid" | "cloud"
+    source: "local" | "cloud" | "none"
+    providerID?: string
+    modelID?: string
+    runtimeID?: string
+    bypassed: boolean
+    confidence: "high" | "medium" | "low"
+    reasonCodes: Array<string>
+    estimatedCloudCost?: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
 export type V2Event =
   | ModelsDevRefreshed
   | IntegrationUpdated
@@ -3366,6 +3481,8 @@ export type V2Event =
   | LocalaiReadinessStatus
   | LocalaiInstallStatus
   | LocalaiProviderChanged
+  | AtlasRoutingDecision2
+  | AtlasRoutingFallback
 
 export type V2EventStream = string
 
@@ -6725,6 +6842,30 @@ export type LocalaiProviderChanged = {
   }
 }
 
+export type AtlasRoutingFallback = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.routing.fallback"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    mode: "auto" | "local" | "hybrid" | "cloud"
+    fromSource: "local" | "cloud"
+    fromProviderID?: string
+    fromModelID?: string
+    toProviderID?: string
+    toModelID?: string
+    failureKind: string
+    reasonCodes: Array<string>
+  }
+}
+
 export type QuestionV2Request = {
   id: string
   sessionID: string
@@ -7783,6 +7924,37 @@ export type EventLocalaiProviderChanged = {
     runtimeID: string
     endpoint?: string
     available: boolean
+  }
+}
+
+export type EventAtlasRoutingDecision = {
+  id: string
+  type: "atlas.routing.decision"
+  properties: {
+    mode: "auto" | "local" | "hybrid" | "cloud"
+    source: "local" | "cloud" | "none"
+    providerID?: string
+    modelID?: string
+    runtimeID?: string
+    bypassed: boolean
+    confidence: "high" | "medium" | "low"
+    reasonCodes: Array<string>
+    estimatedCloudCost?: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasRoutingFallback = {
+  id: string
+  type: "atlas.routing.fallback"
+  properties: {
+    mode: "auto" | "local" | "hybrid" | "cloud"
+    fromSource: "local" | "cloud"
+    fromProviderID?: string
+    fromModelID?: string
+    toProviderID?: string
+    toModelID?: string
+    failureKind: string
+    reasonCodes: Array<string>
   }
 }
 
@@ -9625,6 +9797,90 @@ export type LocalaiManagedExecutableResponses = {
 
 export type LocalaiManagedExecutableResponse =
   LocalaiManagedExecutableResponses[keyof LocalaiManagedExecutableResponses]
+
+export type AtlasRoutingStateData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/router/state"
+}
+
+export type AtlasRoutingStateErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasRoutingStateError = AtlasRoutingStateErrors[keyof AtlasRoutingStateErrors]
+
+export type AtlasRoutingStateResponses = {
+  /**
+   * Current intelligent-routing mode
+   */
+  200: AtlasRoutingState
+}
+
+export type AtlasRoutingStateResponse = AtlasRoutingStateResponses[keyof AtlasRoutingStateResponses]
+
+export type AtlasRoutingModeData = {
+  body?: AtlasRoutingModeInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/router/mode"
+}
+
+export type AtlasRoutingModeErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasRoutingModeError = AtlasRoutingModeErrors[keyof AtlasRoutingModeErrors]
+
+export type AtlasRoutingModeResponses = {
+  /**
+   * Updated routing mode
+   */
+  200: AtlasRoutingState
+}
+
+export type AtlasRoutingModeResponse = AtlasRoutingModeResponses[keyof AtlasRoutingModeResponses]
+
+export type AtlasRoutingDecideData = {
+  body?: AtlasRoutingDecideInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/router/decide"
+}
+
+export type AtlasRoutingDecideErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasRoutingDecideError = AtlasRoutingDecideErrors[keyof AtlasRoutingDecideErrors]
+
+export type AtlasRoutingDecideResponses = {
+  /**
+   * Routing decision with trace
+   */
+  200: AtlasRoutingDecision
+}
+
+export type AtlasRoutingDecideResponse = AtlasRoutingDecideResponses[keyof AtlasRoutingDecideResponses]
 
 export type McpStatusData = {
   body?: never

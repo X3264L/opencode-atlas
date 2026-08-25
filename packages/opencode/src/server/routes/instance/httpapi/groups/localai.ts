@@ -308,6 +308,73 @@ export const ManagedPaths = {
   managedExecutable: "/localai/managed/executable",
 } as const
 
+// ---- Intelligent routing ----------------------------------------------------
+
+export const RoutingStateResponse = Schema.Struct({
+  mode: Schema.Literals(["auto", "local", "hybrid", "cloud"]),
+}).annotate({ identifier: "AtlasRoutingState" })
+
+export const RoutingModePayload = Schema.Struct({
+  mode: Schema.Literals(["auto", "local", "hybrid", "cloud"]),
+}).annotate({ identifier: "AtlasRoutingModeInput" })
+
+const RoutingCandidateInfo = Schema.Struct({
+  source: Schema.Literals(["local", "cloud"]),
+  providerID: Schema.String,
+  modelID: Schema.String,
+  runtimeID: Schema.optionalKey(Schema.String),
+  runtimeModelID: Schema.optionalKey(Schema.String),
+  variantID: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "AtlasRoutingCandidate" })
+
+const RoutingReasonInfo = Schema.Struct({
+  code: Schema.String,
+  detail: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "AtlasRoutingReason" })
+
+const RoutingAlternativeInfo = Schema.Struct({
+  candidate: RoutingCandidateInfo,
+  score: Schema.optionalKey(Schema.Number),
+  rejected: Schema.Boolean,
+  reasons: Schema.Array(RoutingReasonInfo),
+}).annotate({ identifier: "AtlasRoutingAlternative" })
+
+export const RoutingDecisionResponse = Schema.Struct({
+  mode: Schema.Literals(["auto", "local", "hybrid", "cloud"]),
+  selected: Schema.optionalKey(RoutingCandidateInfo),
+  confidence: Schema.Literals(["high", "medium", "low"]),
+  bypassed: Schema.Boolean,
+  reasons: Schema.Array(RoutingReasonInfo),
+  alternatives: Schema.Array(RoutingAlternativeInfo),
+  estimatedCloudCost: Schema.optionalKey(Schema.Number),
+  fallbackPlan: Schema.Array(RoutingCandidateInfo),
+  classification: Schema.Struct({
+    taskClass: Schema.String,
+    difficulty: Schema.Number,
+    reasons: Schema.Array(Schema.String),
+  }),
+}).annotate({ identifier: "AtlasRoutingDecision" })
+
+export const RoutingDecidePayload = Schema.Struct({
+  surface: Schema.optionalKey(Schema.String),
+  estimatedInputTokens: Schema.optionalKey(Schema.Number),
+  estimatedOutputTokens: Schema.optionalKey(Schema.Number),
+  fileCount: Schema.optionalKey(Schema.Number),
+  requiresTools: Schema.optionalKey(Schema.Boolean),
+  requiresStructuredOutput: Schema.optionalKey(Schema.Boolean),
+  requiresVision: Schema.optionalKey(Schema.Boolean),
+  requiresLongContext: Schema.optionalKey(Schema.Boolean),
+  workspacePrivacy: Schema.optionalKey(Schema.Literals(["standard", "prefer_local", "local_only"])),
+  explicitProviderID: Schema.optionalKey(Schema.String),
+  explicitModelID: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "AtlasRoutingDecideInput" })
+
+export const RoutingPaths = {
+  routingState: "/router/state",
+  routingMode: "/router/mode",
+  routingDecide: "/router/decide",
+} as const
+
 export const JobResponse = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(["install", "benchmark", "readiness"]),
@@ -332,6 +399,7 @@ export const LocalAiPaths = {
   jobCancel: "/localai/job/:jobID/cancel",
   preference: "/localai/preference",
   ...ManagedPaths,
+  ...RoutingPaths,
 } as const
 
 export const LocalAiApi = HttpApi.make("localai")
@@ -535,6 +603,43 @@ export const LocalAiApi = HttpApi.make("localai")
             summary: "Configure llama-server executable path",
             description:
               "Stores or clears the explicit llama-server path. Atlas validates the file exists; binaries are never downloaded automatically.",
+          }),
+        ),
+        HttpApiEndpoint.get("routingState", LocalAiPaths.routingState, {
+          query: WorkspaceRoutingQuery,
+          success: described(RoutingStateResponse, "Current intelligent-routing mode"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.routing.state",
+            summary: "Get routing mode",
+            description: "Returns the persisted Atlas routing mode (auto/local/hybrid/cloud).",
+          }),
+        ),
+        HttpApiEndpoint.post("routingMode", LocalAiPaths.routingMode, {
+          query: WorkspaceRoutingQuery,
+          payload: RoutingModePayload,
+          success: described(RoutingStateResponse, "Updated routing mode"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.routing.mode",
+            summary: "Set routing mode",
+            description:
+              "Persists the routing mode. Manual concrete model selection still overrides routing for that request.",
+          }),
+        ),
+        HttpApiEndpoint.post("routingDecide", LocalAiPaths.routingDecide, {
+          query: WorkspaceRoutingQuery,
+          payload: RoutingDecidePayload,
+          success: described(RoutingDecisionResponse, "Routing decision with trace"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.routing.decide",
+            summary: "Resolve execution path",
+            description:
+              "Runs the deterministic Atlas router over current local/cloud candidates and returns the selected provider/model with reason codes, alternatives, and a bounded fallback plan. Never executes inference.",
           }),
         ),
       )

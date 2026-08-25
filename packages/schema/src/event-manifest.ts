@@ -11,6 +11,7 @@ import { LegacyEvent } from "./legacy-event"
 import { LspEvent } from "./lsp-event"
 import { McpEvent } from "./mcp-event"
 import { LocalAiEvent } from "./localai-event"
+import { RoutingEvent } from "./routing-event"
 import { ModelsDev } from "./models-dev"
 import { Permission } from "./permission"
 import { PermissionV1 } from "./permission-v1"
@@ -81,6 +82,7 @@ export const Definitions = Event.inventory(
   ...WorktreeEvent.Definitions,
   ...ServerEvent.Definitions,
   ...LocalAiEvent.Definitions,
+  ...RoutingEvent.Definitions,
 )
 export const Latest = Event.latest(Definitions)
 export { Durable }

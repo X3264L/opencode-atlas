@@ -42,6 +42,22 @@ How it works:
 5. **Use** - once running, the managed endpoint feeds the normal llama.cpp runtime/provider flow: the model appears in OpenCode's picker, and Benchmark/Readiness target it like any other instance.
 6. **Own** - Stop/Restart act only on processes Atlas started (tracked by live child handle, never by persisted PID alone). Logs are captured into a bounded tail buffer viewable in `/local`. Normal OpenCode termination cleans up owned children; after a crash of Atlas itself the old process may survive but is never re-signalled - it shows as stale instead.
 
+## Intelligent routing (experimental)
+
+Atlas can choose the execution path for a request: **Auto**, **Local**, **Hybrid**, or **Cloud**. The mode is persisted (`/local` → Routing action) and applies wherever Atlas resolves a model; picking a concrete model manually always bypasses routing for that request.
+
+Guarantees:
+
+- **Local / `local_only` privacy is a hard wall.** If no capable local model exists, the request fails with "Cloud fallback is disabled by workspace policy" — cloud is never invoked.
+- **Manual selection always wins.** Router bypassed, no reinterpretation.
+- **Unknown cloud price is never free.** Candidates without pricing metadata are penalized and excluded from automatic escalation plans.
+- **Cost caps are enforced**: candidates whose estimated cost exceeds `maxCloudCostPerRequest` are hard-rejected.
+- **User cancellation never falls back.**
+
+Decisions are deterministic and explainable: every result carries stable reason codes (`MODEL_WARM`, `MEASURED_FAST`, `CONTEXT_TOO_LARGE`, `COST_OVER_BUDGET`, …), scored alternatives, coarse confidence (high/medium/low from measured evidence quality), and a bounded fallback plan. Task classification uses request structure only — surface, token estimates, file count, tool/vision requirements — never an extra LLM call and never your prompt contents. Decisions/fallbacks emit `atlas.routing.decision` / `atlas.routing.fallback` events through the standard stream.
+
+Evaluate or integrate via HTTP: `GET/POST /router/state|mode` and `POST /router/decide` (returns resolved provider/model identity; execution itself stays on OpenCode's normal provider path).
+
 ## Runtime events
 
 Local AI publishes typed events through OpenCode's standard event stream (`/event`, `/global/event`):
