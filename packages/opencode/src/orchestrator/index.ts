@@ -77,6 +77,7 @@ export const layer = Layer.effect(
         acceptanceCriteria: input.acceptanceCriteria,
         constraints: input.constraints ?? [],
         priorities: input.priorities ?? [],
+        version: 1,
         createdAt: now,
         updatedAt: now,
       }

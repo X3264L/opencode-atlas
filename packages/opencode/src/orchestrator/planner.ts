@@ -18,6 +18,7 @@ function task(input: Partial<RoadmapTask> & { id: string; title: string; descrip
     parallelizable: true,
     attempt: 0,
     maxAttempts: 2,
+    revision: 1,
     ...input,
   }
 }

@@ -15,6 +15,7 @@ function objective(): ProjectObjective {
     acceptanceCriteria: ["Passwordless login works", "Old login keeps working"],
     constraints: [],
     priorities: [],
+    version: 1,
     createdAt: 0,
     updatedAt: 0,
   }
@@ -32,6 +33,7 @@ function task(id: string, overrides: Partial<RoadmapTask> = {}): RoadmapTask {
     parallelizable: true,
     attempt: 0,
     maxAttempts: 2,
+    revision: 1,
     ...overrides,
   }
 }

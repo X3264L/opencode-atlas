@@ -14,6 +14,8 @@ export interface ProjectObjective {
   acceptanceCriteria: string[]
   constraints: string[]
   priorities: string[]
+  /** Bumped when acceptance criteria/constraints/priorities change */
+  version: number
   createdAt: number
   updatedAt: number
 }
@@ -45,6 +47,8 @@ export interface RoadmapTask {
   parallelizable: boolean
   attempt: number
   maxAttempts: number
+  /** Bumped when the task's scope/criteria change (distinct from failure attempts) */
+  revision: number
 }
 
 export interface Roadmap {
@@ -99,6 +103,16 @@ export interface WorkerArtifact {
   label: string
   locator?: string
   summary?: string
+  /** Lineage tracking for live roadmap mutation */
+  status?: "valid" | "stale" | "invalidated" | "superseded"
+  roadmapVersionCreated?: number
+  objectiveVersionCreated?: number
+  taskRevisionCreated?: number
+  sourceCheckpointID?: string
+  invalidatedByInstructionID?: string
+  invalidatedByChangeSetID?: string
+  supersededByArtifactID?: string
+  reason?: string
 }
 
 export interface VerificationEvidence {
