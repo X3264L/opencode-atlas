@@ -537,6 +537,66 @@ export const OrchestratorPaths = {
   projectRoadmap: "/orchestrator/projects/:projectID/roadmap",
 } as const
 
+// ---- Project Control (Checkpoint / Pause / Resume) ---------------------------
+
+export const ProjectCheckpointInfo = Schema.Struct({
+  id: Schema.String,
+  projectID: Schema.String,
+  createdAt: Schema.Number,
+  objectiveVersion: Schema.Number,
+  roadmapVersion: Schema.Number,
+  organizationVersion: Schema.optionalKey(Schema.Number),
+  projectStatus: Schema.String,
+  pauseState: Schema.optionalKey(Schema.String),
+  activeWorkerCheckpoints: Schema.Array(Schema.Struct({
+    workerID: Schema.String,
+    taskID: Schema.String,
+    taskRevision: Schema.Number,
+    checkpointID: Schema.optionalKey(Schema.String),
+  })),
+  git: Schema.Struct({
+    branch: Schema.optionalKey(Schema.String),
+    head: Schema.optionalKey(Schema.String),
+    base: Schema.optionalKey(Schema.String),
+    dirty: Schema.optionalKey(Schema.Boolean),
+    diffstat: Schema.optionalKey(Schema.Struct({ additions: Schema.Number, deletions: Schema.Number, files: Schema.Number })),
+  }),
+  brain: Schema.Struct({
+    memoryCount: Schema.optionalKey(Schema.Number),
+    latestMemoryTimestamp: Schema.optionalKey(Schema.Number),
+    snapshotRef: Schema.optionalKey(Schema.String),
+  }),
+  verification: Schema.Struct({
+    completedTaskIDs: Schema.Array(Schema.String),
+    failedTaskIDs: Schema.Array(Schema.String),
+    blockedTaskIDs: Schema.Array(Schema.String),
+  }),
+  openIncidentIDs: Schema.Array(Schema.String),
+}).annotate({ identifier: "AtlasProjectCheckpoint" })
+
+export const ProjectControlStateInfo = Schema.Struct({
+  status: Schema.Literals(["running", "pausing", "paused", "resuming"]),
+  mode: Schema.optionalKey(Schema.Literals(["stop_scheduling_only", "finish_current_safe_step", "checkpoint_and_stop_workers"])),
+  requestedAt: Schema.optionalKey(Schema.Number),
+  pausedAt: Schema.optionalKey(Schema.Number),
+  checkpointID: Schema.optionalKey(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "AtlasProjectControlState" })
+
+export const PausePayload = Schema.Struct({
+  mode: Schema.optionalKey(Schema.Literals(["stop_scheduling_only", "finish_current_safe_step", "checkpoint_and_stop_workers"])),
+  reason: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "AtlasPauseInput" })
+
+export const ProjectControlPaths = {
+  checkpoint: "/orchestrator/projects/:projectID/checkpoint",
+  checkpoints: "/orchestrator/projects/:projectID/checkpoints",
+  checkpointByID: "/orchestrator/projects/:projectID/checkpoints/:checkpointID",
+  pause: "/orchestrator/projects/:projectID/pause",
+  resume: "/orchestrator/projects/:projectID/resume",
+  controlState: "/orchestrator/projects/:projectID/control-state",
+} as const
+
 export const JobResponse = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(["install", "benchmark", "readiness"]),
@@ -566,6 +626,7 @@ export const LocalAiPaths = {
   ...BrainPaths,
   ...MissionControlPaths,
   ...SupervisorPaths,
+  ...ProjectControlPaths,
 } as const
 
 export const LocalAiApi = HttpApi.make("localai")
@@ -982,6 +1043,79 @@ export const LocalAiApi = HttpApi.make("localai")
             identifier: "atlas.supervisor.incident",
             summary: "Get supervisor incident",
             description: "Read-only supervisor incident detail. Does not emit events.",
+          }),
+        ),
+        HttpApiEndpoint.post("createCheckpoint", LocalAiPaths.checkpoint, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(ProjectCheckpointInfo, "Project checkpoint"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.project.checkpoint.create",
+            summary: "Create project checkpoint",
+            description: "Captures objective/roadmap versions, worker refs, git, brain and incidents into a persisted checkpoint and emits atlas.project.checkpoint.created.",
+          }),
+        ),
+        HttpApiEndpoint.get("listCheckpoints", LocalAiPaths.checkpoints, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Array(ProjectCheckpointInfo), "Project checkpoints"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.project.checkpoint.list",
+            summary: "List project checkpoints",
+            description: "Read-only list of persisted checkpoints. Does not emit events.",
+          }),
+        ),
+        HttpApiEndpoint.get("getCheckpoint", LocalAiPaths.checkpointByID, {
+          params: { projectID: Schema.String, checkpointID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(ProjectCheckpointInfo, "Project checkpoint"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.project.checkpoint.get",
+            summary: "Get project checkpoint",
+            description: "Read-only checkpoint detail. Does not emit events.",
+          }),
+        ),
+        HttpApiEndpoint.post("pauseProject", LocalAiPaths.pause, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          payload: PausePayload,
+          success: described(ProjectControlStateInfo, "Project control state"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.project.pause",
+            summary: "Pause project",
+            description: "Transitions project to paused via the selected mode and emits atlas.project.paused.",
+          }),
+        ),
+        HttpApiEndpoint.post("resumeProject", LocalAiPaths.resume, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(ProjectControlStateInfo, "Project control state"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.project.resume",
+            summary: "Resume project",
+            description: "Revalidates latest state, discards stale contracts and emits atlas.project.resumed.",
+          }),
+        ),
+        HttpApiEndpoint.get("getControlState", LocalAiPaths.controlState, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(ProjectControlStateInfo, "Project control state"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.project.control",
+            summary: "Get project control state",
+            description: "Read-only control state. Does not emit events.",
           }),
         ),
       )

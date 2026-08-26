@@ -121,6 +121,9 @@ export type Event =
   | EventAtlasSupervisorRecoveryStarted
   | EventAtlasSupervisorRecoveryCompleted
   | EventAtlasSupervisorRecoveryFailed
+  | EventAtlasProjectCheckpointCreated
+  | EventAtlasProjectPaused
+  | EventAtlasProjectResumed
   | EventAtlasInstructionReceived
   | EventAtlasInstructionClassified
   | EventAtlasInstructionApplied
@@ -1934,6 +1937,33 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "atlas.project.checkpoint.created"
+        properties: {
+          projectID: string
+          checkpointID: string
+          timestamp: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.project.paused"
+        properties: {
+          projectID: string
+          checkpointID?: string
+          mode: string
+          timestamp: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.project.resumed"
+        properties: {
+          projectID: string
+          timestamp: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
         type: "atlas.instruction.received"
         properties: {
           projectID: string
@@ -3314,6 +3344,59 @@ export type AtlasSupervisorIncident = {
   updatedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
+export type AtlasProjectCheckpoint = {
+  id: string
+  projectID: string
+  createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  objectiveVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  roadmapVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  organizationVersion?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  projectStatus: string
+  pauseState?: string
+  activeWorkerCheckpoints: Array<{
+    workerID: string
+    taskID: string
+    taskRevision: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    checkpointID?: string
+  }>
+  git: {
+    branch?: string
+    head?: string
+    base?: string
+    dirty?: boolean
+    diffstat?: {
+      additions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      deletions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+  }
+  brain: {
+    memoryCount?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    latestMemoryTimestamp?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    snapshotRef?: string
+  }
+  verification: {
+    completedTaskIDs: Array<string>
+    failedTaskIDs: Array<string>
+    blockedTaskIDs: Array<string>
+  }
+  openIncidentIDs: Array<string>
+}
+
+export type AtlasPauseInput = {
+  mode?: "stop_scheduling_only" | "finish_current_safe_step" | "checkpoint_and_stop_workers"
+  reason?: string
+}
+
+export type AtlasProjectControlState = {
+  status: "running" | "pausing" | "paused" | "resuming"
+  mode?: "stop_scheduling_only" | "finish_current_safe_step" | "checkpoint_and_stop_workers"
+  requestedAt?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  pausedAt?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  checkpointID?: string
+  reason?: string
+}
+
 export type McpStatusConnected = {
   status: "connected"
 }
@@ -3337,7 +3420,11 @@ export type McpStatusNeedsClientRegistration = {
 }
 
 export type McpStatus =
-  McpStatusConnected | McpStatusDisabled | McpStatusFailed | McpStatusNeedsAuth | McpStatusNeedsClientRegistration
+  | McpStatusConnected
+  | McpStatusDisabled
+  | McpStatusFailed
+  | McpStatusNeedsAuth
+  | McpStatusNeedsClientRegistration
 
 export type McpUnsupportedOAuthError = {
   error: string
@@ -3922,6 +4009,9 @@ export type V2Event =
   | AtlasSupervisorRecoveryStarted
   | AtlasSupervisorRecoveryCompleted
   | AtlasSupervisorRecoveryFailed
+  | AtlasProjectCheckpointCreated
+  | AtlasProjectPaused
+  | AtlasProjectResumed
   | AtlasInstructionReceived
   | AtlasInstructionClassified
   | AtlasInstructionApplied
@@ -7645,6 +7735,63 @@ export type AtlasSupervisorRecoveryFailed = {
   }
 }
 
+export type AtlasProjectCheckpointCreated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.checkpoint.created"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    checkpointID: string
+    timestamp: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasProjectPaused = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.paused"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    checkpointID?: string
+    mode: string
+    timestamp: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasProjectResumed = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.resumed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    timestamp: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
 export type AtlasInstructionReceived = {
   id: string
   metadata?: {
@@ -9160,6 +9307,36 @@ export type EventAtlasSupervisorRecoveryFailed = {
     action: string
     attempt: number | "NaN" | "Infinity" | "-Infinity"
     reason?: string
+  }
+}
+
+export type EventAtlasProjectCheckpointCreated = {
+  id: string
+  type: "atlas.project.checkpoint.created"
+  properties: {
+    projectID: string
+    checkpointID: string
+    timestamp: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasProjectPaused = {
+  id: string
+  type: "atlas.project.paused"
+  properties: {
+    projectID: string
+    checkpointID?: string
+    mode: string
+    timestamp: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasProjectResumed = {
+  id: string
+  type: "atlas.project.resumed"
+  properties: {
+    projectID: string
+    timestamp: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
@@ -11648,6 +11825,191 @@ export type AtlasSupervisorIncidentResponses = {
 }
 
 export type AtlasSupervisorIncidentResponse = AtlasSupervisorIncidentResponses[keyof AtlasSupervisorIncidentResponses]
+
+export type AtlasProjectCheckpointCreateData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/checkpoint"
+}
+
+export type AtlasProjectCheckpointCreateErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasProjectCheckpointCreateError =
+  AtlasProjectCheckpointCreateErrors[keyof AtlasProjectCheckpointCreateErrors]
+
+export type AtlasProjectCheckpointCreateResponses = {
+  /**
+   * Project checkpoint
+   */
+  200: AtlasProjectCheckpoint
+}
+
+export type AtlasProjectCheckpointCreateResponse =
+  AtlasProjectCheckpointCreateResponses[keyof AtlasProjectCheckpointCreateResponses]
+
+export type AtlasProjectCheckpointListData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/checkpoints"
+}
+
+export type AtlasProjectCheckpointListErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasProjectCheckpointListError = AtlasProjectCheckpointListErrors[keyof AtlasProjectCheckpointListErrors]
+
+export type AtlasProjectCheckpointListResponses = {
+  /**
+   * Project checkpoints
+   */
+  200: Array<AtlasProjectCheckpoint>
+}
+
+export type AtlasProjectCheckpointListResponse =
+  AtlasProjectCheckpointListResponses[keyof AtlasProjectCheckpointListResponses]
+
+export type AtlasProjectCheckpointGetData = {
+  body?: never
+  path: {
+    projectID: string
+    checkpointID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/checkpoints/{checkpointID}"
+}
+
+export type AtlasProjectCheckpointGetErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasProjectCheckpointGetError = AtlasProjectCheckpointGetErrors[keyof AtlasProjectCheckpointGetErrors]
+
+export type AtlasProjectCheckpointGetResponses = {
+  /**
+   * Project checkpoint
+   */
+  200: AtlasProjectCheckpoint
+}
+
+export type AtlasProjectCheckpointGetResponse =
+  AtlasProjectCheckpointGetResponses[keyof AtlasProjectCheckpointGetResponses]
+
+export type AtlasProjectPauseData = {
+  body?: AtlasPauseInput
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/pause"
+}
+
+export type AtlasProjectPauseErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasProjectPauseError = AtlasProjectPauseErrors[keyof AtlasProjectPauseErrors]
+
+export type AtlasProjectPauseResponses = {
+  /**
+   * Project control state
+   */
+  200: AtlasProjectControlState
+}
+
+export type AtlasProjectPauseResponse = AtlasProjectPauseResponses[keyof AtlasProjectPauseResponses]
+
+export type AtlasProjectResumeData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/resume"
+}
+
+export type AtlasProjectResumeErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasProjectResumeError = AtlasProjectResumeErrors[keyof AtlasProjectResumeErrors]
+
+export type AtlasProjectResumeResponses = {
+  /**
+   * Project control state
+   */
+  200: AtlasProjectControlState
+}
+
+export type AtlasProjectResumeResponse = AtlasProjectResumeResponses[keyof AtlasProjectResumeResponses]
+
+export type AtlasProjectControlData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/control-state"
+}
+
+export type AtlasProjectControlErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasProjectControlError = AtlasProjectControlErrors[keyof AtlasProjectControlErrors]
+
+export type AtlasProjectControlResponses = {
+  /**
+   * Project control state
+   */
+  200: AtlasProjectControlState
+}
+
+export type AtlasProjectControlResponse = AtlasProjectControlResponses[keyof AtlasProjectControlResponses]
 
 export type McpStatusData = {
   body?: never

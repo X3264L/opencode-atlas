@@ -56,8 +56,10 @@ export async function scheduleRoadmap(input: {
   roadmap: Roadmap
   deps: SchedulerDeps
   isCancelled: () => boolean
+  isPaused?: () => boolean | Promise<boolean>
 }): Promise<ScheduleOutcome> {
   const { roadmap, deps, isCancelled } = input
+  const isPaused = input.isPaused ?? (() => false)
   const completed = new Set<string>()
   const failed = new Set<string>()
   let cancelledCount = 0
@@ -75,6 +77,9 @@ export async function scheduleRoadmap(input: {
           cancelledCount += 1
         }
       }
+      return { completed, failed, cancelledCount }
+    }
+    if (await isPaused()) {
       return { completed, failed, cancelledCount }
     }
 

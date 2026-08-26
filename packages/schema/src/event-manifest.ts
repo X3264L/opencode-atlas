@@ -14,6 +14,7 @@ import { LocalAiEvent } from "./localai-event"
 import { RoutingEvent } from "./routing-event"
 import { OrchestratorEvent } from "./orchestrator-event"
 import { SupervisorEvent } from "./supervisor-event"
+import { ProjectControlEvent } from "./project-control-event"
 import { InstructionEvent } from "./instruction-event"
 import { ModelsDev } from "./models-dev"
 import { Permission } from "./permission"
@@ -88,6 +89,7 @@ export const Definitions = Event.inventory(
    ...RoutingEvent.Definitions,
    ...OrchestratorEvent.Definitions,
    ...SupervisorEvent.Definitions,
+   ...ProjectControlEvent.Definitions,
    ...InstructionEvent.Definitions,
 )
 export const Latest = Event.latest(Definitions)

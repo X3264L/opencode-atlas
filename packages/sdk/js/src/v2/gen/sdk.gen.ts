@@ -32,6 +32,19 @@ import type {
   AtlasOrchestratorRoadmapResponses,
   AtlasOrchestratorStartErrors,
   AtlasOrchestratorStartResponses,
+  AtlasPauseInput,
+  AtlasProjectCheckpointCreateErrors,
+  AtlasProjectCheckpointCreateResponses,
+  AtlasProjectCheckpointGetErrors,
+  AtlasProjectCheckpointGetResponses,
+  AtlasProjectCheckpointListErrors,
+  AtlasProjectCheckpointListResponses,
+  AtlasProjectControlErrors,
+  AtlasProjectControlResponses,
+  AtlasProjectPauseErrors,
+  AtlasProjectPauseResponses,
+  AtlasProjectResumeErrors,
+  AtlasProjectResumeResponses,
   AtlasReleaseCheckErrors,
   AtlasReleaseCheckResponses,
   AtlasRoutingDecideErrors,
@@ -3539,6 +3552,228 @@ export class Supervisor extends HeyApiClient {
   }
 }
 
+export class Checkpoint extends HeyApiClient {
+  /**
+   * Create project checkpoint
+   *
+   * Captures objective/roadmap versions, worker refs, git, brain and incidents into a persisted checkpoint and emits atlas.project.checkpoint.created.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AtlasProjectCheckpointCreateResponses,
+      AtlasProjectCheckpointCreateErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/checkpoint",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * List project checkpoints
+   *
+   * Read-only list of persisted checkpoints. Does not emit events.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasProjectCheckpointListResponses,
+      AtlasProjectCheckpointListErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/checkpoints",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get project checkpoint
+   *
+   * Read-only checkpoint detail. Does not emit events.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      checkpointID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "path", key: "checkpointID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasProjectCheckpointGetResponses,
+      AtlasProjectCheckpointGetErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/checkpoints/{checkpointID}",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Project extends HeyApiClient {
+  /**
+   * Pause project
+   *
+   * Transitions project to paused via the selected mode and emits atlas.project.paused.
+   */
+  public pause<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+      atlasPauseInput?: AtlasPauseInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "atlasPauseInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AtlasProjectPauseResponses, AtlasProjectPauseErrors, ThrowOnError>({
+      url: "/orchestrator/projects/{projectID}/pause",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Resume project
+   *
+   * Revalidates latest state, discards stale contracts and emits atlas.project.resumed.
+   */
+  public resume<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AtlasProjectResumeResponses, AtlasProjectResumeErrors, ThrowOnError>({
+      url: "/orchestrator/projects/{projectID}/resume",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get project control state
+   *
+   * Read-only control state. Does not emit events.
+   */
+  public control<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<AtlasProjectControlResponses, AtlasProjectControlErrors, ThrowOnError>({
+      url: "/orchestrator/projects/{projectID}/control-state",
+      ...options,
+      ...params,
+    })
+  }
+
+  private _checkpoint?: Checkpoint
+  get checkpoint(): Checkpoint {
+    return (this._checkpoint ??= new Checkpoint({ client: this.client }))
+  }
+}
+
 export class Atlas extends HeyApiClient {
   private _routing?: Routing
   get routing(): Routing {
@@ -3568,6 +3803,11 @@ export class Atlas extends HeyApiClient {
   private _supervisor?: Supervisor
   get supervisor(): Supervisor {
     return (this._supervisor ??= new Supervisor({ client: this.client }))
+  }
+
+  private _project?: Project
+  get project(): Project {
+    return (this._project ??= new Project({ client: this.client }))
   }
 }
 
@@ -3846,7 +4086,7 @@ export class Mcp extends HeyApiClient {
   }
 }
 
-export class Project extends HeyApiClient {
+export class Project2 extends HeyApiClient {
   /**
    * List all projects
    *
@@ -8496,9 +8736,9 @@ export class OpencodeClient extends HeyApiClient {
     return (this._mcp ??= new Mcp({ client: this.client }))
   }
 
-  private _project?: Project
-  get project(): Project {
-    return (this._project ??= new Project({ client: this.client }))
+  private _project?: Project2
+  get project(): Project2 {
+    return (this._project ??= new Project2({ client: this.client }))
   }
 
   private _pty?: Pty

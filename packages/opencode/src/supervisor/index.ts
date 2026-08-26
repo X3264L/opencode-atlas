@@ -44,6 +44,8 @@ export interface Interface {
   readonly startRecovery: (input: RecoveryInput) => Effect.Effect<SupervisorIncident, Error>
   readonly completeRecovery: (input: RecoveryInput) => Effect.Effect<SupervisorIncident, Error>
   readonly failRecovery: (input: RecoveryInput) => Effect.Effect<SupervisorIncident, Error>
+  readonly setPaused: (projectID: string, paused: boolean) => Effect.Effect<void>
+  readonly isPaused: (projectID: string) => Effect.Effect<boolean>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Supervisor") {}
@@ -64,6 +66,7 @@ export const layer = Layer.effect(
     const healthByProject = new Map<string, SupervisorHealth>()
     const incidentsById = new Map<string, SupervisorIncident>()
     const incidentIdsByProject = new Map<string, Set<string>>()
+    const pausedProjects = new Set<string>()
 
     const getHealthInternal = (projectID: string): SupervisorHealth => healthByProject.get(projectID) ?? "healthy"
 
@@ -99,6 +102,24 @@ export const layer = Layer.effect(
     })
 
     const openIncident = Effect.fn("Supervisor.openIncident")(function* (input: OpenIncidentInput) {
+      // Pause is a human policy barrier: intentionally stopped workers must
+      // not surface as stall/lost false positives. True external failures
+      // (provider/runtime/tool/build kinds) still open normally.
+      if (pausedProjects.has(input.projectID) && (input.kind === "worker_stalled" || input.kind === "worker_lost")) {
+        const suppressed: SupervisorIncident = {
+          id: `suppressed-${Date.now().toString(36)}`,
+          projectID: input.projectID,
+          ...(input.taskID ? { taskID: input.taskID } : {}),
+          kind: input.kind ?? "unknown",
+          severity: input.severity ?? "error",
+          status: "abandoned",
+          evidenceRefs: [],
+          ...(input.detail ? { detail: input.detail } : {}),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }
+        return suppressed
+      }
       const now = Date.now()
       const incidentID = `inc-${now.toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
       const incident: SupervisorIncident = {
@@ -201,6 +222,15 @@ export const layer = Layer.effect(
       return incident
     })
 
+    const setPaused = Effect.fn("Supervisor.setPaused")(function* (projectID: string, paused: boolean) {
+      if (paused) pausedProjects.add(projectID)
+      else pausedProjects.delete(projectID)
+    })
+
+    const isPaused = Effect.fn("Supervisor.isPaused")(function* (projectID: string) {
+      return pausedProjects.has(projectID)
+    })
+
     return Service.of({
       getHealth,
       getIncidents,
@@ -211,6 +241,8 @@ export const layer = Layer.effect(
       startRecovery,
       completeRecovery,
       failRecovery,
+      setPaused,
+      isPaused,
     })
   }),
 )

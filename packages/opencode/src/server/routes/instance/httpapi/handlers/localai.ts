@@ -302,5 +302,27 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
           return incident
         }).pipe(Effect.mapError(mapError)),
       )
+      .handle("createCheckpoint", (ctx: { params: { projectID: string } }) =>
+        orchestrator.checkpoint(ctx.params.projectID).pipe(Effect.mapError(mapError)),
+      )
+      .handle("listCheckpoints", (ctx: { params: { projectID: string } }) =>
+        orchestrator.listCheckpoints(ctx.params.projectID).pipe(Effect.mapError(mapError)),
+      )
+      .handle("getCheckpoint", (ctx: { params: { projectID: string; checkpointID: string } }) =>
+        Effect.gen(function* () {
+          const cp = yield* orchestrator.getCheckpoint(ctx.params.projectID, ctx.params.checkpointID)
+          if (!cp) return yield* Effect.fail(new LocalAiApiError({ name: "CheckpointNotFound", message: `Unknown checkpoint: ${ctx.params.checkpointID}` }))
+          return cp
+        }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("pauseProject", (ctx: { params: { projectID: string }; payload: { mode?: "stop_scheduling_only" | "finish_current_safe_step" | "checkpoint_and_stop_workers"; reason?: string } }) =>
+        orchestrator.pause(ctx.params.projectID, ctx.payload.mode, ctx.payload.reason).pipe(Effect.mapError(mapError)),
+      )
+      .handle("resumeProject", (ctx: { params: { projectID: string } }) =>
+        orchestrator.resume(ctx.params.projectID).pipe(Effect.mapError(mapError)),
+      )
+      .handle("getControlState", (ctx: { params: { projectID: string } }) =>
+        orchestrator.getControlState(ctx.params.projectID).pipe(Effect.mapError(mapError)),
+      )
   }),
 )

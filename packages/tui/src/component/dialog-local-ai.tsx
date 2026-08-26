@@ -18,6 +18,8 @@ import type {
   AtlasFileDiffstat,
   AtlasMissionControlSnapshot,
   AtlasOrchestratorRoadmap,
+  AtlasProjectCheckpoint,
+  AtlasProjectControlState,
   AtlasSupervisorHealth,
   AtlasSupervisorIncident,
 } from "@opencode-ai/sdk/v2/types"
@@ -181,6 +183,8 @@ export function DialogLocalAi() {
   const [activeProjectID, setActiveProjectID] = createSignal<string>()
   const [supervisorHealth, setSupervisorHealth] = createSignal<AtlasSupervisorHealth>()
   const [supervisorIncidents, setSupervisorIncidents] = createSignal<AtlasSupervisorIncident[]>([])
+  const [controlState, setControlState] = createSignal<AtlasProjectControlState>()
+  const [checkpoints, setCheckpoints] = createSignal<AtlasProjectCheckpoint[]>([])
 
   let mcRefreshTimer: ReturnType<typeof setTimeout> | undefined
   const scheduleMcRefresh = () => {
@@ -315,6 +319,34 @@ export function DialogLocalAi() {
         )
         scheduleMcRefresh()
       }),
+      event.on("atlas.project.checkpoint.created", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setCheckpoints((prev) => [
+          ...prev,
+          {
+            id: payload.properties.checkpointID,
+            createdAt: num(payload.properties.timestamp) ?? Date.now(),
+          } as AtlasProjectCheckpoint,
+        ])
+        scheduleMcRefresh()
+      }),
+      event.on("atlas.project.paused", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        const mode = payload.properties.mode
+        setControlState({
+          status: "paused",
+          ...(mode === "stop_scheduling_only" || mode === "finish_current_safe_step" || mode === "checkpoint_and_stop_workers"
+            ? { mode }
+            : {}),
+          ...(payload.properties.checkpointID ? { checkpointID: payload.properties.checkpointID } : {}),
+        })
+        scheduleMcRefresh()
+      }),
+      event.on("atlas.project.resumed", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setControlState({ status: "running" })
+        scheduleMcRefresh()
+      }),
       // Diffstat updates arrive with the full summary; patch state directly so
       // the compact HUD reacts without a snapshot refetch.
       event.on("atlas.diffstat.changed", (payload) => {
@@ -386,7 +418,73 @@ export function DialogLocalAi() {
         const incRes = await sdk.client.atlas.supervisor.incidents({ projectID })
         if (incRes.data) setSupervisorIncidents(incRes.data)
       } catch {}
+      try {
+        const ctrlRes = await sdk.client.atlas.project.control({ projectID })
+        if (ctrlRes.data) setControlState(ctrlRes.data)
+      } catch {}
+      try {
+        const cpRes = await sdk.client.atlas.project.checkpoint.list({ projectID })
+        if (cpRes.data) setCheckpoints(cpRes.data)
+      } catch {}
     } catch {}
+  }
+
+  const handleCheckpoint = async () => {
+    const id = activeProjectID()
+    if (!id) return
+    try {
+      const res = await sdk.client.atlas.project.checkpoint.create({ projectID: id })
+      if (res.data) {
+        setCheckpoints((prev) => [...prev, res.data])
+        toast.show({ title: "Checkpoint created", message: String(res.data.id), variant: "success" })
+      }
+    } catch (e) {
+      toast.show({ title: "Checkpoint failed", message: e instanceof Error ? e.message : String(e), variant: "error" })
+    }
+  }
+
+  const handlePause = (mode: "stop_scheduling_only" | "finish_current_safe_step" | "checkpoint_and_stop_workers") => {
+    const id = activeProjectID()
+    if (!id) return
+    void (async () => {
+      try {
+        const res = await sdk.client.atlas.project.pause({ projectID: id, atlasPauseInput: { mode } })
+        if (res.data) setControlState(res.data)
+      } catch (e) {
+        toast.show({ title: "Pause failed", message: e instanceof Error ? e.message : String(e), variant: "error" })
+      }
+    })()
+  }
+
+  const openPauseModePicker = () => {
+    dialog.replace(() => (
+      <DialogSelect
+        title="Pause mode"
+        placeholder="Select mode"
+        options={[
+          { title: "Finish current safe step", description: "Default · allow current tool to finish, then checkpoint", value: { mode: "finish_current_safe_step" } },
+          { title: "Stop scheduling only", description: "No new tasks, running workers continue", value: { mode: "stop_scheduling_only" } },
+          { title: "Checkpoint and stop workers", description: "Safe stop at next boundary, then checkpoint", value: { mode: "checkpoint_and_stop_workers" } },
+        ]}
+        onSelect={(opt) => {
+          const v = (opt.value as { mode?: string }).mode
+          if (v === "stop_scheduling_only" || v === "finish_current_safe_step" || v === "checkpoint_and_stop_workers") handlePause(v)
+          dialog.replace(() => <DialogLocalAi />)
+        }}
+        actions={[{ command: "pause.cancel", title: "Cancel", side: "left", onTrigger: () => dialog.replace(() => <DialogLocalAi />) }]}
+      />
+    ))
+  }
+
+  const handleResume = async () => {
+    const id = activeProjectID()
+    if (!id) return
+    try {
+      const res = await sdk.client.atlas.project.resume({ projectID: id })
+      if (res.data) setControlState(res.data)
+    } catch (e) {
+      toast.show({ title: "Resume failed", message: e instanceof Error ? e.message : String(e), variant: "error" })
+    }
   }
 
   const loadRoadmap = async (projectID: string) => {
@@ -599,11 +697,34 @@ export function DialogLocalAi() {
         value: {},
         disabled: true,
       })
+      const control = controlState()
+      if (control) {
+        const icon = control.status === "paused" ? "⏸" : control.status === "pausing" ? "⏳" : control.status === "resuming" ? "▶" : undefined
+        rows.push({
+          title: `${icon ? `${icon} ` : ""}Control: ${control.status}`,
+          description: [
+            ...(control.mode ? [control.mode] : []),
+            ...(control.checkpointID ? [`checkpoint ${control.checkpointID}`] : []),
+          ].join(" · ") || undefined,
+          category: "Mission Control",
+          value: {},
+          disabled: true,
+        })
+      }
       for (const inc of supervisorIncidents()) {
         rows.push({
           title: `${inc.status === "resolved" ? "✓" : inc.status === "escalated" ? "✗" : "⚠"} ${inc.kind} ● ${inc.status}`,
           description: [inc.taskID ? `task ${inc.taskID}` : undefined, inc.severity, inc.detail].filter(Boolean).join(" · "),
           category: "Supervisor",
+          value: {},
+          disabled: true,
+        })
+      }
+      for (const cp of checkpoints()) {
+        rows.push({
+          title: `◆ Checkpoint ${cp.id}`,
+          description: new Date(num(cp.createdAt) ?? 0).toLocaleString(),
+          category: "Checkpoint timeline",
           value: {},
           disabled: true,
         })
@@ -771,6 +892,25 @@ export function DialogLocalAi() {
               command: "local.ai.project-roadmap",
               title: "Load project roadmap",
               onTrigger: promptForProject,
+            },
+            {
+              command: "local.ai.project-checkpoint",
+              title: "Checkpoint",
+              hidden: !activeProjectID(),
+              onTrigger: () => void handleCheckpoint(),
+            },
+            {
+              command: "local.ai.project-pause",
+              title: controlState()?.status === "pausing" ? "Pausing..." : "Pause",
+              // Hidden while paused: a pause barrier is lifted via Resume only
+              hidden: !activeProjectID() || controlState()?.status === "paused" || controlState()?.status === "pausing",
+              onTrigger: openPauseModePicker,
+            },
+            {
+              command: "local.ai.project-resume",
+              title: "Resume",
+              hidden: !activeProjectID() || (controlState()?.status !== "paused" && controlState()?.status !== "pausing"),
+              onTrigger: () => void handleResume(),
             },
             {
               command: "local.ai.llama-server-path",
