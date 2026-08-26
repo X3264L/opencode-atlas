@@ -1,6 +1,8 @@
 // Autonomous Execution Supervisor: observes project execution health,
 // classifies failures/stalls, selects bounded recovery actions.
 
+import { countTokens } from "./tokenizer"
+
 export type SupervisorHealth = "healthy" | "degraded" | "recovering" | "blocked" | "paused" | "failed"
 
 export type IncidentKind =
@@ -116,6 +118,7 @@ export interface RequestContextEstimate {
 const CHARS_PER_TOKEN = 4
 const DEFAULT_OUTPUT_RESERVE = 4_000
 
+
 export function estimateRequestContext(input: {
   systemPrompt?: string
   agentPrompt?: string
@@ -126,14 +129,15 @@ export function estimateRequestContext(input: {
   toolSchemaCount?: number
   hasStructuredOutput?: boolean
   reservedOutputTokens?: number
+  modelID?: string
 }): RequestContextEstimate {
-  const est = (text?: string) => Math.ceil((text?.length ?? 0) / CHARS_PER_TOKEN)
-  const system = est(input.systemPrompt)
-  const agent = est(input.agentPrompt)
-  const conversation = est(input.conversationText)
-  const contract = est(input.contractText)
-  const brain = est(input.brainContextText)
-  const files = (input.fileTexts ?? []).reduce((sum, text) => sum + est(text), 0)
+  const tok = (text: string | undefined) => countTokens(text ?? "", input.modelID).tokens
+  const system = tok(input.systemPrompt)
+  const agent = tok(input.agentPrompt)
+  const conversation = tok(input.conversationText)
+  const contract = tok(input.contractText)
+  const brain = tok(input.brainContextText)
+  const files = (input.fileTexts ?? []).reduce((sum, text) => sum + countTokens(text, input.modelID).tokens, 0)
   const tools = (input.toolSchemaCount ?? 0) * 300 // ~300 tokens per tool schema
   const structuredOutput = input.hasStructuredOutput ? 500 : 0
   const overhead = 200
