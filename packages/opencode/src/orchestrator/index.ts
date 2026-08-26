@@ -21,6 +21,9 @@ import { planObjective } from "./planner"
 import { compileContract, contractToPrompt } from "./compiler"
 import { scheduleRoadmap } from "./scheduler"
 import { loadProject, recoverStaleRuns, saveProject, listProjects, type ProjectFile } from "./store"
+import { distillWorkerCompletion, compactMemories } from "./distill"
+import { routeProjectMessage } from "./project-message"
+import { loadBrain as loadBrainStore, saveBrain as saveBrainStore } from "../brain/store"
 
 // Orchestrator service: objective → roadmap → scheduled workers → verified,
 // integrated completion. Workers run as child sessions through the existing
@@ -44,6 +47,10 @@ export interface Interface {
   readonly plan: (projectID: string) => Effect.Effect<Roadmap, Error>
   readonly start: (projectID: string) => Effect.Effect<{ started: boolean }, Error>
   readonly cancel: (projectID: string) => Effect.Effect<boolean, Error>
+  /** Route a project-level message through intent classification */
+  readonly chat: (input: { projectID: string; text: string }) => Effect.Effect<ReturnType<typeof routeProjectMessage>, Error>
+  /** Trigger brain compaction; returns removed count or undefined if not needed */
+  readonly compactBrain: (projectID: string) => Effect.Effect<number | undefined, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Orchestrator") {}
@@ -215,7 +222,7 @@ export const layer = Layer.effect(
                     )
                   : []
                 const lastText = [...response.parts].reverse().find((part) => part.type === "text")
-                return {
+                const workerResult = {
                   taskID: task.id,
                   status: "completed" as const,
                   summary:
@@ -230,6 +237,18 @@ export const layer = Layer.effect(
                   startedAt: Date.now(),
                   finishedAt: Date.now(),
                 }
+                // Brain distillation: derive structured memories from real worker results
+                const distilled = distillWorkerCompletion({
+                  contract, result: workerResult, projectID, roadmapVersion: file.roadmap.version,
+                })
+                if (distilled.length > 0) {
+                  file.artifacts.push(...workerResult.artifacts)
+                  const brain = await loadBrainStore(projectID)
+                  brain.memories.push(...distilled)
+                  await saveBrainStore(projectID, brain)
+                  await saveProject(projectID, file)
+                }
+                return workerResult
               },
               verify: async (_task, result) => ({
                 passed: result.status === "completed" && result.summary.trim().length > 0,
@@ -253,7 +272,20 @@ export const layer = Layer.effect(
       return { started: true }
     })
 
-    return Service.of({ createProject, get, list, plan, start, cancel })
+    const chat = Effect.fn("Orchestrator.chat")(function* (input: { projectID: string; text: string }) {
+      return routeProjectMessage(input.text)
+    })
+
+    const compactBrain = Effect.fn("Orchestrator.compactBrain")(function* (projectID: string) {
+      const brain = yield* Effect.promise(() => loadBrainStore(projectID))
+      const result = yield* Effect.promise(() => Promise.resolve(compactMemories(brain.memories)))
+      if (!result) return undefined
+      brain.memories = result.compacted
+      yield* Effect.promise(() => saveBrainStore(projectID, brain))
+      return result.removedCount
+    })
+
+    return Service.of({ createProject, get, list, plan, start, cancel, chat, compactBrain })
   }),
 )
 
