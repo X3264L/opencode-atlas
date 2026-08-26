@@ -14,7 +14,7 @@ export type ProjectMessageIntent =
 
 const QUESTION_PATTERN = /^\s*(why|what|which|how|who|when|where|is|are|does|can|should|did)\b/i
 const QUESTION_SUFFIX = /\?\s*$/
-const STATUS_PATTERN = /\b(blocked|running|status|progress|pending|ready)\b/i
+const STATUS_PATTERN = /\b(blocked|blocking|running|status|progress|pending|ready)\b/i
 const IDEA_PATTERN = /\b(later add|eventually|future|nice to have|idea|maybe someday)\b/i
 const CORRECTION_PATTERN = /\b(that'?s wrong|that is wrong|incorrect|actually no|we never|correction:)\b/i
 const COMMAND_PATTERN = /^\s*\/(plan|start|cancel|pause|resume)\b/
