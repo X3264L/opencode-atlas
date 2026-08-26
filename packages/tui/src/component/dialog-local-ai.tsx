@@ -122,6 +122,28 @@ export function DialogLocalAi() {
   onMount(() => void load(PRESETS[presetIndex()].id))
   const refresh = () => void load(PRESETS[presetIndex()].id)
 
+  // ---- Mission Control reactive state ----
+  let mcRefreshTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleMcRefresh = () => {
+    if (mcRefreshTimer) return
+    mcRefreshTimer = setTimeout(() => {
+      mcRefreshTimer = undefined
+      refresh()
+    }, 250)
+  }
+
+  const missionControlRows = createMemo(() => {
+    const rm = roadmap()
+    if (!rm) return undefined
+    const complete = rm.tasks.filter((t) => t.status === "complete").length
+    const failed = rm.tasks.filter((t) => t.status === "failed").length
+    const blocked = rm.tasks.filter((t) => t.status === "blocked").length
+    const running = rm.tasks.filter((t) => t.status === "running" || t.status === "verifying")
+    const health =
+      blocked > 0 || failed > 0 ? "degraded" : rm.status === "complete" ? "healthy" : "executing"
+    return { rm, complete, failed, blocked, running, health }
+  })
+
   // Reactive control plane: lifecycle events patch managed rows in place;
   // anything broader triggers one coalesced authoritative refetch.
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -169,6 +191,13 @@ export function DialogLocalAi() {
         })
         scheduleRefresh()
       }),
+      // Mission Control reactive updates from real orchestrator/supervisor events
+      event.on("atlas.task.state" as never, () => scheduleMcRefresh()),
+      event.on("atlas.worker.started" as never, () => scheduleMcRefresh()),
+      event.on("atlas.worker.completed" as never, () => scheduleMcRefresh()),
+      event.on("atlas.worker.failed" as never, () => scheduleMcRefresh()),
+      event.on("atlas.supervisor.recovery.started" as never, () => scheduleMcRefresh()),
+      event.on("atlas.supervisor.recovery.completed" as never, () => scheduleMcRefresh()),
     ]
     onCleanup(() => disposers.forEach((dispose) => dispose()))
   })
@@ -376,6 +405,41 @@ export function DialogLocalAi() {
         value: {},
         disabled: true,
       })
+    }
+
+    // ---- Mission Control ----
+    const mc = missionControlRows()
+    if (mc) {
+      rows.push({
+        title: `Health: ${mc.health}`,
+        description: `${mc.complete} / ${mc.rm.tasks.length} complete · ${mc.running.length} running · ${mc.blocked} blocked · ${mc.failed} failed`,
+        category: "Mission Control",
+        value: {},
+        disabled: true,
+      })
+      for (const t of mc.rm.tasks) {
+        const icon =
+          t.status === "complete" ? "✓"
+          : t.status === "running" || t.status === "verifying" ? "●"
+          : t.status === "failed" ? "✗"
+          : t.status === "blocked" ? "⊘"
+          : t.status === "cancelled" ? "×"
+          : "○"
+        rows.push({
+          title: `${icon} ${t.title}`,
+          description: [
+            t.status,
+            ...(t.dependencies.length > 0 ? [`after ${t.dependencies.join(", ")}`] : []),
+            `attempt ${t.attempt}/${t.maxAttempts}`,
+            ...(t.workerProfile ? [t.workerProfile] : []),
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          category: `Roadmap v${mc.rm.version}`,
+          value: {},
+          disabled: true,
+        })
+      }
     }
 
     for (const runtime of Object.keys(value.installed)) {
