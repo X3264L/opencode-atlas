@@ -375,6 +375,36 @@ export const RoutingPaths = {
   routingDecide: "/router/decide",
 } as const
 
+// ---- Project Brain -----------------------------------------------------------
+
+export const BrainQueryPayload = Schema.Struct({
+  query: Schema.String,
+  kinds: Schema.optionalKey(Schema.Array(Schema.String)),
+  includeHistorical: Schema.optionalKey(Schema.Boolean),
+  maxItems: Schema.optionalKey(Schema.Number),
+}).annotate({ identifier: "AtlasBrainQueryInput" })
+
+export const BrainMemoryInfo = Schema.Struct({
+  id: Schema.String,
+  kind: Schema.String,
+  title: Schema.String,
+  content: Schema.String,
+  status: Schema.String,
+  authority: Schema.String,
+  confidence: Schema.Number,
+}).annotate({ identifier: "AtlasBrainMemory" })
+
+export const BrainAnswer = Schema.Struct({
+  text: Schema.String,
+  confidence: Schema.Literals(["high", "medium", "low"]),
+  sourceMemoryIDs: Schema.Array(Schema.String),
+}).annotate({ identifier: "AtlasBrainAnswer" })
+
+export const BrainPaths = {
+  brainQuery: "/orchestrator/projects/:projectID/brain/query",
+  brainMemories: "/orchestrator/projects/:projectID/brain/memories",
+} as const
+
 // ---- Project orchestrator ----------------------------------------------------
 
 export const OrchestratorCreatePayload = Schema.Struct({
@@ -459,6 +489,7 @@ export const LocalAiPaths = {
   ...ManagedPaths,
   ...RoutingPaths,
   ...OrchestratorPaths,
+  ...BrainPaths,
 } as const
 
 export const LocalAiApi = HttpApi.make("localai")
@@ -774,6 +805,32 @@ export const LocalAiApi = HttpApi.make("localai")
             identifier: "atlas.orchestrator.roadmap",
             summary: "Get project roadmap",
             description: "Returns the versioned roadmap IR including per-task status and dependencies.",
+          }),
+        ),
+        HttpApiEndpoint.post("brainQuery", LocalAiPaths.brainQuery, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          payload: BrainQueryPayload,
+          success: described(BrainAnswer, "Evidence-grounded project answer"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.brain.query",
+            summary: "Query the Project Brain",
+            description:
+              "Retrieves evidence-grounded answers from the project brain with source citations. Deterministic status queries are answered without model invocation.",
+          }),
+        ),
+        HttpApiEndpoint.get("brainMemories", LocalAiPaths.brainMemories, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Array(BrainMemoryInfo), "Project memories"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.brain.memories",
+            summary: "List project memories",
+            description: "Returns all persisted brain memory items for this project.",
           }),
         ),
       )

@@ -3,6 +3,8 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { LocalAI } from "@/localai/localai"
 import { AtlasRouter } from "@/router/index"
 import { Orchestrator } from "@/orchestrator/index"
+import { loadBrain } from "@/brain/store"
+import { retrieve as retrieveMemories } from "@/brain/retrieve"
 import { InstanceHttpApi } from "../api"
 import {
   InstallPayload,
@@ -189,6 +191,46 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
             )
           }
           return file.roadmap
+        }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("brainQuery", (ctx: { params: { projectID: string }; payload: { query: string; includeHistorical?: boolean; maxItems?: number } }) =>
+        Effect.gen(function* () {
+          const brain = yield* Effect.promise(() => loadBrain(ctx.params.projectID))
+          const scored = retrieveMemories(brain.memories, {
+            projectID: ctx.params.projectID,
+            query: ctx.payload.query,
+            includeHistorical: ctx.payload.includeHistorical,
+            maxItems: ctx.payload.maxItems ?? 10,
+          })
+          if (scored.length === 0) {
+            return {
+              text: "No project evidence was found for this question. The project may not have enough recorded context yet.",
+              confidence: "low" as const,
+              sourceMemoryIDs: [],
+            }
+          }
+          return {
+            text: scored
+              .slice(0, 5)
+              .map((entry) => entry.memory.content)
+              .join("\n\n"),
+            confidence: scored[0]!.memory.authority === "user" ? ("high" as const) : ("medium" as const),
+            sourceMemoryIDs: scored.slice(0, 5).map((entry) => entry.memory.id),
+          }
+        }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("brainMemories", (ctx: { params: { projectID: string } }) =>
+        Effect.gen(function* () {
+          const brain = yield* Effect.promise(() => loadBrain(ctx.params.projectID))
+          return brain.memories.map((m) => ({
+            id: m.id,
+            kind: m.kind,
+            title: m.title,
+            content: m.content,
+            status: m.status,
+            authority: m.authority,
+            confidence: m.confidence,
+          }))
         }).pipe(Effect.mapError(mapError)),
       )
   }),
