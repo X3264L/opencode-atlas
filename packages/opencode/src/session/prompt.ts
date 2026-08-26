@@ -53,6 +53,7 @@ import { LocalAI } from "@/localai/localai"
 import { createExecutionRouteState } from "@/router/execution"
 import { classifyFailureFromMessage } from "@/router/types"
 import { readRoutingPrefs } from "@/router/store"
+import { estimateRequestContext } from "@/supervisor/types"
 import { RoutingEvent } from "@opencode-ai/schema/routing-event"
 import { getManagedLlamaCppManager } from "@/localai/process-manager"
 import type { RoutingCandidate } from "@/router/types"
@@ -671,7 +672,10 @@ const layer = Layer.effect(
         surface: input.agentName ?? "chat",
         requiresTools: input.agentToolsCount > 0,
         requiresVision: input.hasImages,
-        estimatedInputTokens: 8_000,
+        estimatedInputTokens: estimateRequestContext({
+          systemPrompt: input.agentName ?? "",
+          conversationText: "x".repeat(input.agentToolsCount * 2_000),
+        }).inputTokens,
       })
       const selected = decision.selected
       if (!selected) return undefined

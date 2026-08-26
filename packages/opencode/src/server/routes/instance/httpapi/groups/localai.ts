@@ -405,6 +405,37 @@ export const BrainPaths = {
   brainMemories: "/orchestrator/projects/:projectID/brain/memories",
 } as const
 
+// ---- Mission Control / Release Autopilot ---------------------------------------
+
+const MissionControlResponse = Schema.Struct({
+  projectID: Schema.String,
+  roadmapVersion: Schema.Number,
+  roadmapStatus: Schema.String,
+  totalTasks: Schema.Number,
+  completeTasks: Schema.Number,
+  failedTasks: Schema.Number,
+  blockedTasks: Schema.Number,
+  health: Schema.Literals(["healthy", "degraded", "recovering", "blocked"]),
+  criticalPathLength: Schema.Number,
+}).annotate({ identifier: "AtlasMissionControlSnapshot" })
+
+export const ReleaseCheckResult = Schema.Struct({
+  releaseID: Schema.String,
+  status: Schema.Literals(["ready", "blocked"]),
+  roadmapVersion: Schema.Number,
+  gates: Schema.Array(Schema.Struct({
+    gateID: Schema.String,
+    label: Schema.String,
+    status: Schema.Literals(["pass", "fail", "unknown", "skipped"]),
+    required: Schema.Boolean,
+  })),
+}).annotate({ identifier: "AtlasReleaseCheckResult" })
+
+export const MissionControlPaths = {
+  missionControl: "/orchestrator/projects/:projectID/mission-control",
+  releaseCheck: "/orchestrator/projects/:projectID/release/check",
+} as const
+
 // ---- Project orchestrator ----------------------------------------------------
 
 export const OrchestratorCreatePayload = Schema.Struct({
@@ -490,6 +521,7 @@ export const LocalAiPaths = {
   ...RoutingPaths,
   ...OrchestratorPaths,
   ...BrainPaths,
+  ...MissionControlPaths,
 } as const
 
 export const LocalAiApi = HttpApi.make("localai")
@@ -831,6 +863,32 @@ export const LocalAiApi = HttpApi.make("localai")
             identifier: "atlas.brain.memories",
             summary: "List project memories",
             description: "Returns all persisted brain memory items for this project.",
+          }),
+        ),
+        HttpApiEndpoint.get("missionControl", LocalAiPaths.missionControl, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(MissionControlResponse, "Mission Control snapshot"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.missionControl.snapshot",
+            summary: "Get Mission Control snapshot",
+            description:
+              "Aggregated read-only view of project health, task counts, critical path and roadmap state. Computed from authoritative subsystems.",
+          }),
+        ),
+        HttpApiEndpoint.post("releaseCheck", LocalAiPaths.releaseCheck, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(ReleaseCheckResult, "Release readiness check result"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.release.check",
+            summary: "Check release readiness",
+            description:
+              "Evaluates release gates against the current roadmap state. Ready only when all required gates pass with evidence.",
           }),
         ),
       )

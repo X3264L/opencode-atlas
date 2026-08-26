@@ -5,7 +5,7 @@ export type SupervisorHealth = "healthy" | "degraded" | "recovering" | "blocked"
 
 export type IncidentKind =
   | "worker_stalled" | "worker_lost" | "tool_failure" | "provider_failure"
-  | "runtime_failure" | "test_failure" | "build_failure" | "context_overflow"
+  | "runtime_failure" | "runtime_crashed" | "test_failure" | "build_failure" | "context_overflow"
   | "context_starvation" | "capability_mismatch" | "dependency_mismatch"
   | "write_conflict" | "integration_failure" | "verification_failure"
   | "repeated_failure" | "resource_pressure" | "unknown"
@@ -62,6 +62,7 @@ export function selectRecoveryActions(
       return exhausted ? ["request_user"] : ["retry_new_session"]
     case "provider_failure":
     case "runtime_failure":
+    case "runtime_crashed":
       return exhausted ? ["restart_managed_runtime", "request_user"] : ["retry_new_session", "restart_managed_runtime"]
     case "tool_failure":
     case "test_failure":

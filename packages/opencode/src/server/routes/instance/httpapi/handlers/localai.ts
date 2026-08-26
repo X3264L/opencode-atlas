@@ -5,6 +5,8 @@ import { AtlasRouter } from "@/router/index"
 import { Orchestrator } from "@/orchestrator/index"
 import { loadBrain } from "@/brain/store"
 import { retrieve as retrieveMemories } from "@/brain/retrieve"
+import { buildMissionControlSnapshot, checkReleaseReadiness } from "@/supervisor/mission"
+import { computeCriticalPath } from "@/supervisor/org"
 import { InstanceHttpApi } from "../api"
 import {
   InstallPayload,
@@ -231,6 +233,43 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
             authority: m.authority,
             confidence: m.confidence,
           }))
+        }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("missionControl", (ctx: { params: { projectID: string } }) =>
+        Effect.gen(function* () {
+          const file = yield* orchestrator.get(ctx.params.projectID)
+          if (!file) return yield* Effect.fail(new LocalAiApiError({ name: "OrchestratorNotFound", message: `Unknown project` }))
+          const cp = computeCriticalPath(file.roadmap)
+          const snapshot = buildMissionControlSnapshot(ctx.params.projectID, file.roadmap, cp)
+          return {
+            projectID: snapshot.projectID,
+            roadmapVersion: snapshot.roadmapVersion,
+            roadmapStatus: snapshot.roadmapStatus,
+            totalTasks: snapshot.totalTasks,
+            completeTasks: snapshot.completeTasks,
+            failedTasks: snapshot.failedTasks,
+            blockedTasks: snapshot.blockedTasks,
+            health: snapshot.health,
+            criticalPathLength: snapshot.criticalPathLength,
+          }
+        }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("releaseCheck", (ctx: { params: { projectID: string } }) =>
+        Effect.gen(function* () {
+          const file = yield* orchestrator.get(ctx.params.projectID)
+          if (!file) return yield* Effect.fail(new LocalAiApiError({ name: "OrchestratorNotFound", message: `Unknown project` }))
+          const release = checkReleaseReadiness(ctx.params.projectID, file.roadmap)
+          return {
+            releaseID: release.id,
+            status: release.status === "ready" ? ("ready" as const) : ("blocked" as const),
+            roadmapVersion: release.roadmapVersion,
+            gates: release.results.map((r) => ({
+              gateID: r.gateID,
+              label: release.gates.find((g) => g.gateID === r.gateID)?.label ?? r.gateID,
+              status: r.status,
+              required: true,
+            })),
+          }
         }).pipe(Effect.mapError(mapError)),
       )
   }),
