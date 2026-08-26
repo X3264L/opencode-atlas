@@ -80,6 +80,18 @@ Fallback transitions emit `atlas.routing.fallback` events; the TUI surfaces them
 - Checkpoints/artifacts persist under the Atlas state dir; stale running workers from an earlier process are recovered as interrupted, never left falsely running.
 - Typed events (`atlas.project.*`, `atlas.task.state`, `atlas.worker.*`, `atlas.verification.completed`) stream over the standard event channel.
 
+## Project Brain (experimental)
+
+The Project Brain is a durable, evidence-grounded memory layer that indexes project decisions, constraints, contracts, assumptions, failures and lessons. It answers "why?" questions with source citations.
+
+- **Authority hierarchy**: user correction > source state > verified evidence > agent result > derived summary
+- **Retrieval**: structured exact-match first (task IDs, active constraints), then lexical scoring weighted by authority/status/recency/confidence
+- **Context packs**: token-budgeted compilations for worker/planner/reviewer prompts — critical constraints are never dropped silently; dropped items are recorded with reasons
+- **Decision Ledger**: architecture decisions tracked with supersession chains and alternatives considered
+- **Privacy**: local-only projects never send brain content to cloud for indexing or synthesis
+
+Query via `POST /orchestrator/projects/:id/brain/query` or browse via `GET .../brain/memories`.
+
 ## Runtime events
 
 Local AI publishes typed events through OpenCode's standard event stream (`/event`, `/global/event`):
