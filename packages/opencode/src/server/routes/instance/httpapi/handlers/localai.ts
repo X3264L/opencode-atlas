@@ -3,10 +3,12 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { LocalAI } from "@/localai/localai"
 import { AtlasRouter } from "@/router/index"
 import { Orchestrator } from "@/orchestrator/index"
+import { Git } from "@/git"
 import { loadBrain } from "@/brain/store"
 import { retrieve as retrieveMemories } from "@/brain/retrieve"
 import { buildMissionControlSnapshot, checkReleaseReadiness } from "@/supervisor/mission"
 import { computeCriticalPath } from "@/supervisor/org"
+import { computeDiffstat } from "@/orchestrator/diffstat"
 import { InstanceHttpApi } from "../api"
 import {
   InstallPayload,
@@ -25,6 +27,7 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
     const localai = yield* LocalAI.Service
     const router = yield* AtlasRouter.Service
     const orchestrator = yield* Orchestrator.Service
+    const git = yield* Git.Service
 
     const mapError = (error: unknown) =>
       new LocalAiApiError({
@@ -241,6 +244,13 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
           if (!file) return yield* Effect.fail(new LocalAiApiError({ name: "OrchestratorNotFound", message: `Unknown project` }))
           const cp = computeCriticalPath(file.roadmap)
           const snapshot = buildMissionControlSnapshot(ctx.params.projectID, file.roadmap, cp)
+          let diffstat: { additions: number; deletions: number; files: number } | undefined
+          if (file.workspace) {
+            try {
+              const stats = yield* git.stats(file.workspace, "HEAD").pipe(Effect.catch(() => Effect.succeed([] as { file: string; additions: number; deletions: number }[])))
+              diffstat = computeDiffstat(stats)
+            } catch {}
+          }
           return {
             projectID: snapshot.projectID,
             roadmapVersion: snapshot.roadmapVersion,
@@ -251,6 +261,7 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
             blockedTasks: snapshot.blockedTasks,
             health: snapshot.health,
             criticalPathLength: snapshot.criticalPathLength,
+            ...(diffstat ? { diffstat } : {}),
           }
         }).pipe(Effect.mapError(mapError)),
       )
