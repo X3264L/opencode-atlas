@@ -115,6 +115,12 @@ export type Event =
   | EventAtlasProjectBlocked
   | EventAtlasProjectCancelled
   | EventAtlasDiffstatChanged
+  | EventAtlasSupervisorHealthChanged
+  | EventAtlasSupervisorIncidentOpened
+  | EventAtlasSupervisorIncidentClassified
+  | EventAtlasSupervisorRecoveryStarted
+  | EventAtlasSupervisorRecoveryCompleted
+  | EventAtlasSupervisorRecoveryFailed
   | EventAtlasInstructionReceived
   | EventAtlasInstructionClassified
   | EventAtlasInstructionApplied
@@ -1865,6 +1871,69 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "atlas.supervisor.health.changed"
+        properties: {
+          projectID: string
+          health: string
+          previousHealth?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.supervisor.incident.opened"
+        properties: {
+          projectID: string
+          incidentID: string
+          kind: string
+          severity: string
+          status: string
+          taskID?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.supervisor.incident.classified"
+        properties: {
+          projectID: string
+          incidentID: string
+          kind: string
+          previousKind?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.supervisor.recovery.started"
+        properties: {
+          projectID: string
+          incidentID: string
+          taskID?: string
+          action: string
+          attempt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.supervisor.recovery.completed"
+        properties: {
+          projectID: string
+          incidentID: string
+          action: string
+          attempt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.supervisor.recovery.failed"
+        properties: {
+          projectID: string
+          incidentID: string
+          action: string
+          attempt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          reason?: string
+        }
+      }
+    | {
+        id: string
         type: "atlas.instruction.received"
         properties: {
           projectID: string
@@ -3227,6 +3296,24 @@ export type AtlasReleaseCheckResult = {
   }>
 }
 
+export type AtlasSupervisorHealth = {
+  projectID: string
+  health: string
+  previousHealth?: string
+}
+
+export type AtlasSupervisorIncident = {
+  id: string
+  projectID: string
+  taskID?: string
+  kind: string
+  severity: string
+  status: string
+  detail?: string
+  createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  updatedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
 export type McpStatusConnected = {
   status: "connected"
 }
@@ -3829,6 +3916,12 @@ export type V2Event =
   | AtlasProjectBlocked
   | AtlasProjectCancelled
   | AtlasDiffstatChanged
+  | AtlasSupervisorHealthChanged
+  | AtlasSupervisorIncidentOpened
+  | AtlasSupervisorIncidentClassified
+  | AtlasSupervisorRecoveryStarted
+  | AtlasSupervisorRecoveryCompleted
+  | AtlasSupervisorRecoveryFailed
   | AtlasInstructionReceived
   | AtlasInstructionClassified
   | AtlasInstructionApplied
@@ -7429,6 +7522,129 @@ export type AtlasDiffstatChanged = {
   }
 }
 
+export type AtlasSupervisorHealthChanged = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.supervisor.health.changed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    health: string
+    previousHealth?: string
+  }
+}
+
+export type AtlasSupervisorIncidentOpened = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.supervisor.incident.opened"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    incidentID: string
+    kind: string
+    severity: string
+    status: string
+    taskID?: string
+  }
+}
+
+export type AtlasSupervisorIncidentClassified = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.supervisor.incident.classified"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    incidentID: string
+    kind: string
+    previousKind?: string
+  }
+}
+
+export type AtlasSupervisorRecoveryStarted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.supervisor.recovery.started"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    incidentID: string
+    taskID?: string
+    action: string
+    attempt: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasSupervisorRecoveryCompleted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.supervisor.recovery.completed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    incidentID: string
+    action: string
+    attempt: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasSupervisorRecoveryFailed = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.supervisor.recovery.failed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    incidentID: string
+    action: string
+    attempt: number | "NaN" | "Infinity" | "-Infinity"
+    reason?: string
+  }
+}
+
 export type AtlasInstructionReceived = {
   id: string
   metadata?: {
@@ -8875,6 +9091,75 @@ export type EventAtlasDiffstatChanged = {
     additions: number | "NaN" | "Infinity" | "-Infinity"
     deletions: number | "NaN" | "Infinity" | "-Infinity"
     files: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasSupervisorHealthChanged = {
+  id: string
+  type: "atlas.supervisor.health.changed"
+  properties: {
+    projectID: string
+    health: string
+    previousHealth?: string
+  }
+}
+
+export type EventAtlasSupervisorIncidentOpened = {
+  id: string
+  type: "atlas.supervisor.incident.opened"
+  properties: {
+    projectID: string
+    incidentID: string
+    kind: string
+    severity: string
+    status: string
+    taskID?: string
+  }
+}
+
+export type EventAtlasSupervisorIncidentClassified = {
+  id: string
+  type: "atlas.supervisor.incident.classified"
+  properties: {
+    projectID: string
+    incidentID: string
+    kind: string
+    previousKind?: string
+  }
+}
+
+export type EventAtlasSupervisorRecoveryStarted = {
+  id: string
+  type: "atlas.supervisor.recovery.started"
+  properties: {
+    projectID: string
+    incidentID: string
+    taskID?: string
+    action: string
+    attempt: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasSupervisorRecoveryCompleted = {
+  id: string
+  type: "atlas.supervisor.recovery.completed"
+  properties: {
+    projectID: string
+    incidentID: string
+    action: string
+    attempt: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasSupervisorRecoveryFailed = {
+  id: string
+  type: "atlas.supervisor.recovery.failed"
+  properties: {
+    projectID: string
+    incidentID: string
+    action: string
+    attempt: number | "NaN" | "Infinity" | "-Infinity"
+    reason?: string
   }
 }
 
@@ -11271,6 +11556,98 @@ export type AtlasReleaseCheckResponses = {
 }
 
 export type AtlasReleaseCheckResponse = AtlasReleaseCheckResponses[keyof AtlasReleaseCheckResponses]
+
+export type AtlasSupervisorHealthData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/supervisor/{projectID}/health"
+}
+
+export type AtlasSupervisorHealthErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasSupervisorHealthError = AtlasSupervisorHealthErrors[keyof AtlasSupervisorHealthErrors]
+
+export type AtlasSupervisorHealthResponses = {
+  /**
+   * Supervisor health
+   */
+  200: AtlasSupervisorHealth
+}
+
+export type AtlasSupervisorHealthResponse = AtlasSupervisorHealthResponses[keyof AtlasSupervisorHealthResponses]
+
+export type AtlasSupervisorIncidentsData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/supervisor/{projectID}/incidents"
+}
+
+export type AtlasSupervisorIncidentsErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasSupervisorIncidentsError = AtlasSupervisorIncidentsErrors[keyof AtlasSupervisorIncidentsErrors]
+
+export type AtlasSupervisorIncidentsResponses = {
+  /**
+   * Supervisor incidents
+   */
+  200: Array<AtlasSupervisorIncident>
+}
+
+export type AtlasSupervisorIncidentsResponse =
+  AtlasSupervisorIncidentsResponses[keyof AtlasSupervisorIncidentsResponses]
+
+export type AtlasSupervisorIncidentData = {
+  body?: never
+  path: {
+    projectID: string
+    incidentID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/supervisor/{projectID}/incidents/{incidentID}"
+}
+
+export type AtlasSupervisorIncidentErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasSupervisorIncidentError = AtlasSupervisorIncidentErrors[keyof AtlasSupervisorIncidentErrors]
+
+export type AtlasSupervisorIncidentResponses = {
+  /**
+   * Supervisor incident
+   */
+  200: AtlasSupervisorIncident
+}
+
+export type AtlasSupervisorIncidentResponse = AtlasSupervisorIncidentResponses[keyof AtlasSupervisorIncidentResponses]
 
 export type McpStatusData = {
   body?: never

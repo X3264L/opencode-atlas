@@ -3,6 +3,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { LocalAI } from "@/localai/localai"
 import { AtlasRouter } from "@/router/index"
 import { Orchestrator } from "@/orchestrator/index"
+import { Supervisor } from "@/supervisor/index"
 import { loadBrain } from "@/brain/store"
 import { retrieve as retrieveMemories } from "@/brain/retrieve"
 import { buildMissionControlSnapshot, checkReleaseReadiness } from "@/supervisor/mission"
@@ -25,6 +26,7 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
     const localai = yield* LocalAI.Service
     const router = yield* AtlasRouter.Service
     const orchestrator = yield* Orchestrator.Service
+    const supervisor = yield* Supervisor.Service
 
     const mapError = (error: unknown) =>
       new LocalAiApiError({
@@ -280,6 +282,24 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
               required: true,
             })),
           }
+        }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("supervisorHealth", (ctx: { params: { projectID: string } }) =>
+        Effect.gen(function* () {
+          const health = yield* supervisor.getHealth(ctx.params.projectID)
+          return { projectID: ctx.params.projectID, health }
+        }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("supervisorIncidents", (ctx: { params: { projectID: string } }) =>
+        Effect.gen(function* () {
+          return yield* supervisor.getIncidents(ctx.params.projectID)
+        }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("supervisorIncident", (ctx: { params: { projectID: string; incidentID: string } }) =>
+        Effect.gen(function* () {
+          const incident = yield* supervisor.getIncident(ctx.params.projectID, ctx.params.incidentID)
+          if (!incident) return yield* Effect.fail(new LocalAiApiError({ name: "SupervisorIncidentNotFound", message: `Unknown incident: ${ctx.params.incidentID}` }))
+          return incident
         }).pipe(Effect.mapError(mapError)),
       )
   }),

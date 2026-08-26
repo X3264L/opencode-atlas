@@ -18,6 +18,8 @@ import type {
   AtlasFileDiffstat,
   AtlasMissionControlSnapshot,
   AtlasOrchestratorRoadmap,
+  AtlasSupervisorHealth,
+  AtlasSupervisorIncident,
 } from "@opencode-ai/sdk/v2/types"
 
 type VariantEvaluation = LocalAiRecommendation["alternatives"][number]
@@ -177,6 +179,8 @@ export function DialogLocalAi() {
   const [mc, setMc] = createSignal<AtlasMissionControlSnapshot>()
   const [diffstat, setDiffstat] = createSignal<DiffstatSummaryView>()
   const [activeProjectID, setActiveProjectID] = createSignal<string>()
+  const [supervisorHealth, setSupervisorHealth] = createSignal<AtlasSupervisorHealth>()
+  const [supervisorIncidents, setSupervisorIncidents] = createSignal<AtlasSupervisorIncident[]>([])
 
   let mcRefreshTimer: ReturnType<typeof setTimeout> | undefined
   const scheduleMcRefresh = () => {
@@ -241,8 +245,76 @@ export function DialogLocalAi() {
       event.on("atlas.worker.started" as never, () => scheduleMcRefresh()),
       event.on("atlas.worker.completed" as never, () => scheduleMcRefresh()),
       event.on("atlas.worker.failed" as never, () => scheduleMcRefresh()),
-      event.on("atlas.supervisor.recovery.started" as never, () => scheduleMcRefresh()),
-      event.on("atlas.supervisor.recovery.completed" as never, () => scheduleMcRefresh()),
+      event.on("atlas.supervisor.health.changed", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setSupervisorHealth({ projectID: payload.properties.projectID, health: payload.properties.health, previousHealth: payload.properties.previousHealth })
+        // Health header should reflect supervisor state immediately; also refresh snapshot for counts
+        scheduleMcRefresh()
+      }),
+      event.on("atlas.supervisor.incident.opened", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setSupervisorIncidents((prev) => [
+          ...prev,
+          {
+            id: payload.properties.incidentID,
+            projectID: payload.properties.projectID,
+            kind: payload.properties.kind,
+            severity: payload.properties.severity,
+            status: payload.properties.status,
+            ...(payload.properties.taskID ? { taskID: payload.properties.taskID } : {}),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          } as AtlasSupervisorIncident,
+        ])
+        scheduleMcRefresh()
+      }),
+      event.on("atlas.supervisor.incident.classified", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setSupervisorIncidents((prev) =>
+          prev.map((inc) =>
+            inc.id === payload.properties.incidentID ? { ...inc, kind: payload.properties.kind, updatedAt: Date.now() } : inc,
+          ),
+        )
+        scheduleMcRefresh()
+      }),
+      event.on("atlas.supervisor.recovery.started", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setSupervisorIncidents((prev) =>
+          prev.map((inc) =>
+            inc.id === payload.properties.incidentID
+              ? { ...inc, status: "recovering", detail: `${payload.properties.action} attempt ${payload.properties.attempt}`, updatedAt: Date.now() }
+              : inc,
+          ),
+        )
+        scheduleMcRefresh()
+      }),
+      event.on("atlas.supervisor.recovery.completed", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setSupervisorIncidents((prev) =>
+          prev.map((inc) =>
+            inc.id === payload.properties.incidentID
+              ? { ...inc, status: "resolved", detail: `${payload.properties.action} attempt ${payload.properties.attempt}`, updatedAt: Date.now() }
+              : inc,
+          ),
+        )
+        scheduleMcRefresh()
+      }),
+      event.on("atlas.supervisor.recovery.failed", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setSupervisorIncidents((prev) =>
+          prev.map((inc) =>
+            inc.id === payload.properties.incidentID
+              ? {
+                  ...inc,
+                  status: "escalated",
+                  detail: payload.properties.reason ?? `${payload.properties.action} attempt ${payload.properties.attempt} failed`,
+                  updatedAt: Date.now(),
+                }
+              : inc,
+          ),
+        )
+        scheduleMcRefresh()
+      }),
       // Diffstat updates arrive with the full summary; patch state directly so
       // the compact HUD reacts without a snapshot refetch.
       event.on("atlas.diffstat.changed", (payload) => {
@@ -274,10 +346,12 @@ export function DialogLocalAi() {
 
   // Mission Control rows prefer the backend snapshot read model; task detail
   // comes from the project roadmap endpoint as today.
+  // Supervisor health overrides snapshot health when available for live updates.
   const missionControlRows = createMemo(() => {
     const rm = roadmap()
     if (!rm) return undefined
     const snapshot = mc()?.projectID === activeProjectID() ? mc() : undefined
+    const supHealth = supervisorHealth()?.health
     if (snapshot) {
       return {
         rm,
@@ -285,15 +359,14 @@ export function DialogLocalAi() {
         failed: num(snapshot.failedTasks) ?? 0,
         blocked: num(snapshot.blockedTasks) ?? 0,
         running: rm.tasks.filter((t) => t.status === "running" || t.status === "verifying"),
-        health: snapshot.health,
+        health: supHealth ?? snapshot.health,
       }
     }
     const complete = rm.tasks.filter((t) => t.status === "complete").length
     const failed = rm.tasks.filter((t) => t.status === "failed").length
     const blocked = rm.tasks.filter((t) => t.status === "blocked").length
     const running = rm.tasks.filter((t) => t.status === "running" || t.status === "verifying")
-    const health =
-      blocked > 0 || failed > 0 ? "degraded" : rm.status === "complete" ? "healthy" : "executing"
+    const health = supHealth ?? (blocked > 0 || failed > 0 ? "degraded" : rm.status === "complete" ? "healthy" : "executing")
     return { rm, complete, failed, blocked, running, health }
   })
 
@@ -304,6 +377,15 @@ export function DialogLocalAi() {
       setActiveProjectID(projectID)
       setMc(result.data)
       setDiffstat(toDiffstatView(result.data.diffstat))
+      // Fetch supervisor state read-only (these GETs must not emit mutation events)
+      try {
+        const healthRes = await sdk.client.atlas.supervisor.health({ projectID })
+        if (healthRes.data) setSupervisorHealth(healthRes.data)
+      } catch {}
+      try {
+        const incRes = await sdk.client.atlas.supervisor.incidents({ projectID })
+        if (incRes.data) setSupervisorIncidents(incRes.data)
+      } catch {}
     } catch {}
   }
 
@@ -517,6 +599,15 @@ export function DialogLocalAi() {
         value: {},
         disabled: true,
       })
+      for (const inc of supervisorIncidents()) {
+        rows.push({
+          title: `${inc.status === "resolved" ? "✓" : inc.status === "escalated" ? "✗" : "⚠"} ${inc.kind} ● ${inc.status}`,
+          description: [inc.taskID ? `task ${inc.taskID}` : undefined, inc.severity, inc.detail].filter(Boolean).join(" · "),
+          category: "Supervisor",
+          value: {},
+          disabled: true,
+        })
+      }
       for (const t of mc.rm.tasks) {
         const icon =
           t.status === "complete" ? "✓"

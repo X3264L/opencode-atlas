@@ -453,6 +453,32 @@ export const MissionControlPaths = {
   fileDiffstat: "/orchestrator/projects/:projectID/file-diffstat",
 } as const
 
+// ---- Supervisor ---------------------------------------------------------------
+
+export const SupervisorHealthInfo = Schema.Struct({
+  projectID: Schema.String,
+  health: Schema.String,
+  previousHealth: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "AtlasSupervisorHealth" })
+
+export const SupervisorIncidentInfo = Schema.Struct({
+  id: Schema.String,
+  projectID: Schema.String,
+  taskID: Schema.optionalKey(Schema.String),
+  kind: Schema.String,
+  severity: Schema.String,
+  status: Schema.String,
+  detail: Schema.optionalKey(Schema.String),
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number,
+}).annotate({ identifier: "AtlasSupervisorIncident" })
+
+export const SupervisorPaths = {
+  supervisorHealth: "/supervisor/:projectID/health",
+  supervisorIncidents: "/supervisor/:projectID/incidents",
+  supervisorIncident: "/supervisor/:projectID/incidents/:incidentID",
+} as const
+
 // ---- Project orchestrator ----------------------------------------------------
 
 export const OrchestratorCreatePayload = Schema.Struct({
@@ -539,6 +565,7 @@ export const LocalAiPaths = {
   ...OrchestratorPaths,
   ...BrainPaths,
   ...MissionControlPaths,
+  ...SupervisorPaths,
 } as const
 
 export const LocalAiApi = HttpApi.make("localai")
@@ -919,6 +946,42 @@ export const LocalAiApi = HttpApi.make("localai")
             summary: "Check release readiness",
             description:
               "Evaluates release gates against the current roadmap state. Ready only when all required gates pass with evidence.",
+          }),
+        ),
+        HttpApiEndpoint.get("supervisorHealth", LocalAiPaths.supervisorHealth, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(SupervisorHealthInfo, "Supervisor health"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.supervisor.health",
+            summary: "Get supervisor health",
+            description: "Read-only supervisor health for a project. Does not emit events.",
+          }),
+        ),
+        HttpApiEndpoint.get("supervisorIncidents", LocalAiPaths.supervisorIncidents, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Array(SupervisorIncidentInfo), "Supervisor incidents"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.supervisor.incidents",
+            summary: "List supervisor incidents",
+            description: "Read-only list of supervisor incidents for a project. Does not emit events.",
+          }),
+        ),
+        HttpApiEndpoint.get("supervisorIncident", LocalAiPaths.supervisorIncident, {
+          params: { projectID: Schema.String, incidentID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(SupervisorIncidentInfo, "Supervisor incident"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.supervisor.incident",
+            summary: "Get supervisor incident",
+            description: "Read-only supervisor incident detail. Does not emit events.",
           }),
         ),
       )

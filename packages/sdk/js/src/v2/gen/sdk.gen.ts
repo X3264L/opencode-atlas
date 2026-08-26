@@ -42,6 +42,12 @@ import type {
   AtlasRoutingModeResponses,
   AtlasRoutingStateErrors,
   AtlasRoutingStateResponses,
+  AtlasSupervisorHealthErrors,
+  AtlasSupervisorHealthResponses,
+  AtlasSupervisorIncidentErrors,
+  AtlasSupervisorIncidentResponses,
+  AtlasSupervisorIncidentsErrors,
+  AtlasSupervisorIncidentsResponses,
   Auth as Auth3,
   AuthRemoveErrors,
   AuthRemoveResponses,
@@ -3421,6 +3427,118 @@ export class Release extends HeyApiClient {
   }
 }
 
+export class Supervisor extends HeyApiClient {
+  /**
+   * Get supervisor health
+   *
+   * Read-only supervisor health for a project. Does not emit events.
+   */
+  public health<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasSupervisorHealthResponses,
+      AtlasSupervisorHealthErrors,
+      ThrowOnError
+    >({
+      url: "/supervisor/{projectID}/health",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * List supervisor incidents
+   *
+   * Read-only list of supervisor incidents for a project. Does not emit events.
+   */
+  public incidents<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasSupervisorIncidentsResponses,
+      AtlasSupervisorIncidentsErrors,
+      ThrowOnError
+    >({
+      url: "/supervisor/{projectID}/incidents",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get supervisor incident
+   *
+   * Read-only supervisor incident detail. Does not emit events.
+   */
+  public incident<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      incidentID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "path", key: "incidentID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasSupervisorIncidentResponses,
+      AtlasSupervisorIncidentErrors,
+      ThrowOnError
+    >({
+      url: "/supervisor/{projectID}/incidents/{incidentID}",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Atlas extends HeyApiClient {
   private _routing?: Routing
   get routing(): Routing {
@@ -3445,6 +3563,11 @@ export class Atlas extends HeyApiClient {
   private _release?: Release
   get release(): Release {
     return (this._release ??= new Release({ client: this.client }))
+  }
+
+  private _supervisor?: Supervisor
+  get supervisor(): Supervisor {
+    return (this._supervisor ??= new Supervisor({ client: this.client }))
   }
 }
 

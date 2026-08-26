@@ -59,6 +59,7 @@ import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Npm } from "@opencode-ai/core/npm"
 import { LocalAI } from "@/localai/localai"
 import { Orchestrator } from "@/orchestrator/index"
+import { Supervisor } from "@/supervisor/index"
 import { AtlasRouter } from "@/router/index"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { ProjectV2 } from "@opencode-ai/core/project"
@@ -220,6 +221,7 @@ const app = LayerNode.group([
   Database.node,
   LocalAI.node,
   Orchestrator.node,
+  Supervisor.node,
   AtlasRouter.node,
   Auth.node,
   Account.node,
