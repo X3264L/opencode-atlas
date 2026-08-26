@@ -114,6 +114,20 @@ export type Event =
   | EventAtlasProjectCompleted
   | EventAtlasProjectBlocked
   | EventAtlasProjectCancelled
+  | EventAtlasDiffstatChanged
+  | EventAtlasInstructionReceived
+  | EventAtlasInstructionClassified
+  | EventAtlasInstructionApplied
+  | EventAtlasInstructionDeferred
+  | EventAtlasInstructionFailed
+  | EventAtlasRoadmapChangesetProposed
+  | EventAtlasRoadmapChangesetApplied
+  | EventAtlasRoadmapTaskInvalidated
+  | EventAtlasWorkerInterruptionRequested
+  | EventAtlasWorkerInterrupted
+  | EventAtlasWorkerResultStale
+  | EventAtlasArtifactInvalidated
+  | EventAtlasArtifactSuperseded
   | EventServerInstanceDisposed
 
 export type QuestionReplied = {
@@ -1839,6 +1853,138 @@ export type GlobalEvent = {
           projectID: string
         }
       }
+    | {
+        id: string
+        type: "atlas.diffstat.changed"
+        properties: {
+          projectID: string
+          additions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          deletions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.instruction.received"
+        properties: {
+          projectID: string
+          instructionID: string
+          text: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.instruction.classified"
+        properties: {
+          projectID: string
+          instructionID: string
+          kind: string
+          reasonCodes: Array<string>
+          confidence: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.instruction.applied"
+        properties: {
+          projectID: string
+          instructionID: string
+          changesetID: string
+          roadmapVersionAfter: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.instruction.deferred"
+        properties: {
+          projectID: string
+          instructionID: string
+          reason?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.instruction.failed"
+        properties: {
+          projectID: string
+          instructionID: string
+          error: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.roadmap.changeset.proposed"
+        properties: {
+          projectID: string
+          changesetID: string
+          risk: string
+          operationCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.roadmap.changeset.applied"
+        properties: {
+          projectID: string
+          changesetID: string
+          roadmapVersionAfter: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.roadmap.task.invalidated"
+        properties: {
+          projectID: string
+          taskID: string
+          instructionID: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.worker.interruption.requested"
+        properties: {
+          projectID: string
+          taskID: string
+          sessionID?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.worker.interrupted"
+        properties: {
+          projectID: string
+          taskID: string
+          sessionID?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.worker.result.stale"
+        properties: {
+          projectID: string
+          taskID: string
+          contractRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          currentRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.artifact.invalidated"
+        properties: {
+          projectID: string
+          artifactID: string
+          instructionID?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.artifact.superseded"
+        properties: {
+          projectID: string
+          oldArtifactID: string
+          newArtifactID: string
+        }
+      }
     | EventServerInstanceDisposed
     | SyncEventSessionCreated
     | SyncEventSessionUpdated
@@ -3020,6 +3166,67 @@ export type AtlasOrchestratorProject = {
   roadmap: AtlasOrchestratorRoadmap
 }
 
+export type AtlasBrainQueryInput = {
+  query: string
+  kinds?: Array<string>
+  includeHistorical?: boolean
+  maxItems?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type AtlasBrainAnswer = {
+  text: string
+  confidence: "high" | "medium" | "low"
+  sourceMemoryIDs: Array<string>
+}
+
+export type AtlasBrainMemory = {
+  id: string
+  kind: string
+  title: string
+  content: string
+  status: string
+  authority: string
+  confidence: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type AtlasDiffstatSummary = {
+  additions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  deletions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  files: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type AtlasMissionControlSnapshot = {
+  projectID: string
+  roadmapVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  roadmapStatus: string
+  totalTasks: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  completeTasks: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  failedTasks: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  blockedTasks: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  health: "healthy" | "degraded" | "recovering" | "blocked"
+  criticalPathLength: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  diffstat?: AtlasDiffstatSummary
+}
+
+export type AtlasFileDiffstat = {
+  path: string
+  additions?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  deletions?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  binary: boolean
+}
+
+export type AtlasReleaseCheckResult = {
+  releaseID: string
+  status: "ready" | "blocked"
+  roadmapVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  gates: Array<{
+    gateID: string
+    label: string
+    status: "pass" | "fail" | "unknown" | "skipped"
+    required: boolean
+  }>
+}
+
 export type McpStatusConnected = {
   status: "connected"
 }
@@ -3043,11 +3250,7 @@ export type McpStatusNeedsClientRegistration = {
 }
 
 export type McpStatus =
-  | McpStatusConnected
-  | McpStatusDisabled
-  | McpStatusFailed
-  | McpStatusNeedsAuth
-  | McpStatusNeedsClientRegistration
+  McpStatusConnected | McpStatusDisabled | McpStatusFailed | McpStatusNeedsAuth | McpStatusNeedsClientRegistration
 
 export type McpUnsupportedOAuthError = {
   error: string
@@ -3625,6 +3828,20 @@ export type V2Event =
   | AtlasProjectCompleted
   | AtlasProjectBlocked
   | AtlasProjectCancelled
+  | AtlasDiffstatChanged
+  | AtlasInstructionReceived
+  | AtlasInstructionClassified
+  | AtlasInstructionApplied
+  | AtlasInstructionDeferred
+  | AtlasInstructionFailed
+  | AtlasRoadmapChangesetProposed
+  | AtlasRoadmapChangesetApplied
+  | AtlasRoadmapTaskInvalidated
+  | AtlasWorkerInterruptionRequested
+  | AtlasWorkerInterrupted
+  | AtlasWorkerResultStale
+  | AtlasArtifactInvalidated
+  | AtlasArtifactSuperseded
 
 export type V2EventStream = string
 
@@ -7192,6 +7409,278 @@ export type AtlasProjectCancelled = {
   }
 }
 
+export type AtlasDiffstatChanged = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.diffstat.changed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    additions: number | "NaN" | "Infinity" | "-Infinity"
+    deletions: number | "NaN" | "Infinity" | "-Infinity"
+    files: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasInstructionReceived = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.instruction.received"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    instructionID: string
+    text: string
+  }
+}
+
+export type AtlasInstructionClassified = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.instruction.classified"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    instructionID: string
+    kind: string
+    reasonCodes: Array<string>
+    confidence: string
+  }
+}
+
+export type AtlasInstructionApplied = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.instruction.applied"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    instructionID: string
+    changesetID: string
+    roadmapVersionAfter: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasInstructionDeferred = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.instruction.deferred"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    instructionID: string
+    reason?: string
+  }
+}
+
+export type AtlasInstructionFailed = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.instruction.failed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    instructionID: string
+    error: string
+  }
+}
+
+export type AtlasRoadmapChangesetProposed = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.roadmap.changeset.proposed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    changesetID: string
+    risk: string
+    operationCount: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasRoadmapChangesetApplied = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.roadmap.changeset.applied"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    changesetID: string
+    roadmapVersionAfter: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasRoadmapTaskInvalidated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.roadmap.task.invalidated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+    instructionID: string
+  }
+}
+
+export type AtlasWorkerInterruptionRequested = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.worker.interruption.requested"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+    sessionID?: string
+  }
+}
+
+export type AtlasWorkerInterrupted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.worker.interrupted"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+    sessionID?: string
+  }
+}
+
+export type AtlasWorkerResultStale = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.worker.result.stale"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+    contractRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity"
+    currentRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasArtifactInvalidated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.artifact.invalidated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    artifactID: string
+    instructionID?: string
+  }
+}
+
+export type AtlasArtifactSuperseded = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.artifact.superseded"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    oldArtifactID: string
+    newArtifactID: string
+  }
+}
+
 export type QuestionV2Request = {
   id: string
   sessionID: string
@@ -8375,6 +8864,152 @@ export type EventAtlasProjectCancelled = {
   type: "atlas.project.cancelled"
   properties: {
     projectID: string
+  }
+}
+
+export type EventAtlasDiffstatChanged = {
+  id: string
+  type: "atlas.diffstat.changed"
+  properties: {
+    projectID: string
+    additions: number | "NaN" | "Infinity" | "-Infinity"
+    deletions: number | "NaN" | "Infinity" | "-Infinity"
+    files: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasInstructionReceived = {
+  id: string
+  type: "atlas.instruction.received"
+  properties: {
+    projectID: string
+    instructionID: string
+    text: string
+  }
+}
+
+export type EventAtlasInstructionClassified = {
+  id: string
+  type: "atlas.instruction.classified"
+  properties: {
+    projectID: string
+    instructionID: string
+    kind: string
+    reasonCodes: Array<string>
+    confidence: string
+  }
+}
+
+export type EventAtlasInstructionApplied = {
+  id: string
+  type: "atlas.instruction.applied"
+  properties: {
+    projectID: string
+    instructionID: string
+    changesetID: string
+    roadmapVersionAfter: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasInstructionDeferred = {
+  id: string
+  type: "atlas.instruction.deferred"
+  properties: {
+    projectID: string
+    instructionID: string
+    reason?: string
+  }
+}
+
+export type EventAtlasInstructionFailed = {
+  id: string
+  type: "atlas.instruction.failed"
+  properties: {
+    projectID: string
+    instructionID: string
+    error: string
+  }
+}
+
+export type EventAtlasRoadmapChangesetProposed = {
+  id: string
+  type: "atlas.roadmap.changeset.proposed"
+  properties: {
+    projectID: string
+    changesetID: string
+    risk: string
+    operationCount: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasRoadmapChangesetApplied = {
+  id: string
+  type: "atlas.roadmap.changeset.applied"
+  properties: {
+    projectID: string
+    changesetID: string
+    roadmapVersionAfter: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasRoadmapTaskInvalidated = {
+  id: string
+  type: "atlas.roadmap.task.invalidated"
+  properties: {
+    projectID: string
+    taskID: string
+    instructionID: string
+  }
+}
+
+export type EventAtlasWorkerInterruptionRequested = {
+  id: string
+  type: "atlas.worker.interruption.requested"
+  properties: {
+    projectID: string
+    taskID: string
+    sessionID?: string
+  }
+}
+
+export type EventAtlasWorkerInterrupted = {
+  id: string
+  type: "atlas.worker.interrupted"
+  properties: {
+    projectID: string
+    taskID: string
+    sessionID?: string
+  }
+}
+
+export type EventAtlasWorkerResultStale = {
+  id: string
+  type: "atlas.worker.result.stale"
+  properties: {
+    projectID: string
+    taskID: string
+    contractRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity"
+    currentRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasArtifactInvalidated = {
+  id: string
+  type: "atlas.artifact.invalidated"
+  properties: {
+    projectID: string
+    artifactID: string
+    instructionID?: string
+  }
+}
+
+export type EventAtlasArtifactSuperseded = {
+  id: string
+  type: "atlas.artifact.superseded"
+  properties: {
+    projectID: string
+    oldArtifactID: string
+    newArtifactID: string
   }
 }
 
@@ -10482,6 +11117,160 @@ export type AtlasOrchestratorRoadmapResponses = {
 
 export type AtlasOrchestratorRoadmapResponse =
   AtlasOrchestratorRoadmapResponses[keyof AtlasOrchestratorRoadmapResponses]
+
+export type AtlasBrainQueryData = {
+  body?: AtlasBrainQueryInput
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/brain/query"
+}
+
+export type AtlasBrainQueryErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasBrainQueryError = AtlasBrainQueryErrors[keyof AtlasBrainQueryErrors]
+
+export type AtlasBrainQueryResponses = {
+  /**
+   * Evidence-grounded project answer
+   */
+  200: AtlasBrainAnswer
+}
+
+export type AtlasBrainQueryResponse = AtlasBrainQueryResponses[keyof AtlasBrainQueryResponses]
+
+export type AtlasBrainMemoriesData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/brain/memories"
+}
+
+export type AtlasBrainMemoriesErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasBrainMemoriesError = AtlasBrainMemoriesErrors[keyof AtlasBrainMemoriesErrors]
+
+export type AtlasBrainMemoriesResponses = {
+  /**
+   * Project memories
+   */
+  200: Array<AtlasBrainMemory>
+}
+
+export type AtlasBrainMemoriesResponse = AtlasBrainMemoriesResponses[keyof AtlasBrainMemoriesResponses]
+
+export type AtlasMissionControlSnapshotData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/mission-control"
+}
+
+export type AtlasMissionControlSnapshotErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasMissionControlSnapshotError =
+  AtlasMissionControlSnapshotErrors[keyof AtlasMissionControlSnapshotErrors]
+
+export type AtlasMissionControlSnapshotResponses = {
+  /**
+   * Mission Control snapshot
+   */
+  200: AtlasMissionControlSnapshot
+}
+
+export type AtlasMissionControlSnapshotResponse =
+  AtlasMissionControlSnapshotResponses[keyof AtlasMissionControlSnapshotResponses]
+
+export type AtlasMissionControlFileDiffstatData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/file-diffstat"
+}
+
+export type AtlasMissionControlFileDiffstatErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasMissionControlFileDiffstatError =
+  AtlasMissionControlFileDiffstatErrors[keyof AtlasMissionControlFileDiffstatErrors]
+
+export type AtlasMissionControlFileDiffstatResponses = {
+  /**
+   * Working-tree file-by-file diffstat
+   */
+  200: Array<AtlasFileDiffstat>
+}
+
+export type AtlasMissionControlFileDiffstatResponse =
+  AtlasMissionControlFileDiffstatResponses[keyof AtlasMissionControlFileDiffstatResponses]
+
+export type AtlasReleaseCheckData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/release/check"
+}
+
+export type AtlasReleaseCheckErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasReleaseCheckError = AtlasReleaseCheckErrors[keyof AtlasReleaseCheckErrors]
+
+export type AtlasReleaseCheckResponses = {
+  /**
+   * Release readiness check result
+   */
+  200: AtlasReleaseCheckResult
+}
+
+export type AtlasReleaseCheckResponse = AtlasReleaseCheckResponses[keyof AtlasReleaseCheckResponses]
 
 export type McpStatusData = {
   body?: never

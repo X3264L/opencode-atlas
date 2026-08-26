@@ -407,6 +407,20 @@ export const BrainPaths = {
 
 // ---- Mission Control / Release Autopilot ---------------------------------------
 
+const DiffstatSummaryInfo = Schema.Struct({
+  additions: Schema.Number,
+  deletions: Schema.Number,
+  files: Schema.Number,
+}).annotate({ identifier: "AtlasDiffstatSummary" })
+
+export const FileDiffstatRow = Schema.Struct({
+  path: Schema.String,
+  /** Absent for binary files; git reports no line counts for them */
+  additions: Schema.optionalKey(Schema.Number),
+  deletions: Schema.optionalKey(Schema.Number),
+  binary: Schema.Boolean,
+}).annotate({ identifier: "AtlasFileDiffstat" })
+
 const MissionControlResponse = Schema.Struct({
   projectID: Schema.String,
   roadmapVersion: Schema.Number,
@@ -417,6 +431,8 @@ const MissionControlResponse = Schema.Struct({
   blockedTasks: Schema.Number,
   health: Schema.Literals(["healthy", "degraded", "recovering", "blocked"]),
   criticalPathLength: Schema.Number,
+  /** Working-tree diffstat versus HEAD; omitted when the project has no workspace */
+  diffstat: Schema.optionalKey(DiffstatSummaryInfo),
 }).annotate({ identifier: "AtlasMissionControlSnapshot" })
 
 export const ReleaseCheckResult = Schema.Struct({
@@ -434,6 +450,7 @@ export const ReleaseCheckResult = Schema.Struct({
 export const MissionControlPaths = {
   missionControl: "/orchestrator/projects/:projectID/mission-control",
   releaseCheck: "/orchestrator/projects/:projectID/release/check",
+  fileDiffstat: "/orchestrator/projects/:projectID/file-diffstat",
 } as const
 
 // ---- Project orchestrator ----------------------------------------------------
@@ -876,6 +893,19 @@ export const LocalAiApi = HttpApi.make("localai")
             summary: "Get Mission Control snapshot",
             description:
               "Aggregated read-only view of project health, task counts, critical path and roadmap state. Computed from authoritative subsystems.",
+          }),
+        ),
+        HttpApiEndpoint.get("fileDiffstat", LocalAiPaths.fileDiffstat, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Array(FileDiffstatRow), "Working-tree file-by-file diffstat"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.missionControl.fileDiffstat",
+            summary: "Get file-by-file diffstat",
+            description:
+              "Per-file additions/deletions of the current working tree versus HEAD, computed from real git numstat. Binary files report binary=true without line counts.",
           }),
         ),
         HttpApiEndpoint.post("releaseCheck", LocalAiPaths.releaseCheck, {

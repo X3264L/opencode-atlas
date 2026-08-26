@@ -98,6 +98,8 @@ function DiffViewer(props: { api: TuiPluginApi }) {
           mode?: DiffMode
           sessionID?: string
           messageID?: string
+          /** Open focused on this working-tree file (set by the Mission Control drilldown) */
+          file?: string
           returnRoute?: TuiRouteCurrent
         }
       | undefined
@@ -183,6 +185,14 @@ function DiffViewer(props: { api: TuiPluginApi }) {
     setSelectedFileIndex(undefined)
     setSelectedHunk(undefined)
     setReviewedFileNames(new Set<string>())
+  })
+
+  // When opened with an explicit file (Mission Control drilldown), focus it once loaded
+  createEffect(() => {
+    const target = params()?.file
+    if (!target) return
+    const index = files().findIndex((entry) => entry.file === target)
+    if (index !== -1) jumpToFileIndex(index)
   })
 
   const ensureHighlightedFileNode = () => {

@@ -5,6 +5,7 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { Git } from "@/git"
 import {
+  DiffstatChanged,
   ProjectCancelled,
   ProjectBlocked,
   ProjectCompleted,
@@ -23,6 +24,9 @@ import { scheduleRoadmap } from "./scheduler"
 import { loadProject, recoverStaleRuns, saveProject, listProjects, type ProjectFile } from "./store"
 import { distillWorkerCompletion, compactMemories } from "./distill"
 import { routeProjectMessage } from "./project-message"
+import { computeDiffstat, toFileDiffstats, type DiffstatSummary, type FileDiffstat } from "./diffstat"
+import { createDiffstatWatcher } from "./diffstat-watcher"
+import { workingTreeStats } from "./working-tree"
 import { loadBrain as loadBrainStore, saveBrain as saveBrainStore } from "../brain/store"
 
 // Orchestrator service: objective → roadmap → scheduled workers → verified,
@@ -51,11 +55,21 @@ export interface Interface {
   readonly chat: (input: { projectID: string; text: string }) => Effect.Effect<ReturnType<typeof routeProjectMessage>, Error>
   /** Trigger brain compaction; returns removed count or undefined if not needed */
   readonly compactBrain: (projectID: string) => Effect.Effect<number | undefined, Error>
+  /** Authoritative working-tree diffstat summary; undefined when the project has no workspace */
+  readonly workingTreeSummary: (projectID: string) => Effect.Effect<DiffstatSummary | undefined>
+  /** Authoritative per-file working-tree diffstat; empty when the project has no workspace */
+  readonly workingTreeFiles: (projectID: string) => Effect.Effect<FileDiffstat[]>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Orchestrator") {}
 
 const activeRuns = new Set<string>()
+
+// Runtime diffstat watchers, keyed by project ID so a project/workspace pair
+// always owns exactly one watcher while it is active in this process.
+const diffstatWatchers = new Map<string, ReturnType<typeof createDiffstatWatcher>>()
+
+const DIFFSTAT_POLL_MS = 2_000
 
 function publish(
   bridge: typeof EventV2Bridge.Service.Service,
@@ -72,6 +86,32 @@ export const layer = Layer.effect(
     const sessions = yield* Session.Service
     const promptService = yield* SessionPrompt.Service
     const git = yield* Git.Service
+
+    // One change-driven watcher per active project. The initial poll primes the
+    // baseline without emitting; later polls publish only on real summary changes.
+    function ensureDiffstatWatcher(projectID: string, workspace: string) {
+      if (diffstatWatchers.has(projectID)) return
+      const watcher = createDiffstatWatcher({
+        projectID,
+        debounceMs: DIFFSTAT_POLL_MS,
+        getStats: () => Effect.runPromise(workingTreeStats(git, workspace)),
+        onChange: (summary) => publish(bridge, DiffstatChanged, { projectID, ...summary }),
+      })
+      diffstatWatchers.set(projectID, watcher)
+      watcher.start()
+      void watcher.poll().catch(() => {})
+    }
+
+    function stopDiffstatWatcher(projectID: string) {
+      diffstatWatchers.get(projectID)?.stop()
+      diffstatWatchers.delete(projectID)
+    }
+
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        for (const projectID of [...diffstatWatchers.keys()]) stopDiffstatWatcher(projectID)
+      }),
+    )
 
     const createProject = Effect.fn("Orchestrator.createProject")(function* (input: CreateInput) {
       const now = Date.now()
@@ -97,12 +137,17 @@ export const layer = Layer.effect(
         ...(input.workspace ? { workspace: input.workspace } : {}),
       }
       yield* Effect.promise(() => saveProject(projectID, file))
+      if (input.workspace) ensureDiffstatWatcher(projectID, input.workspace)
       publish(bridge, ProjectCreated, { projectID, title: input.title })
       return objective
     })
 
     const get = Effect.fn("Orchestrator.get")(function* (projectID: string) {
-      return yield* Effect.promise(() => loadProject(projectID))
+      const file = yield* Effect.promise(() => loadProject(projectID))
+      // Inspecting a project activates its diffstat watcher so Mission Control
+      // stays reactive for any loaded project, not only ones created here.
+      if (file?.workspace) ensureDiffstatWatcher(projectID, file.workspace)
+      return file
     })
 
     const list = Effect.fn("Orchestrator.list")(function* () {
@@ -128,6 +173,7 @@ export const layer = Layer.effect(
         if (["planned", "ready", "blocked"].includes(task.status)) task.status = "cancelled"
       }
       activeRuns.delete(projectID)
+      stopDiffstatWatcher(projectID)
       yield* Effect.promise(() => saveProject(projectID, file))
       publish(bridge, ProjectCancelled, { projectID })
       return true
@@ -144,6 +190,7 @@ export const layer = Layer.effect(
 
       file.roadmap.status = "executing"
       activeRuns.add(projectID)
+      if (file.workspace) ensureDiffstatWatcher(projectID, file.workspace)
       yield* Effect.promise(() => saveProject(projectID, file))
 
       void (async () => {
@@ -285,7 +332,21 @@ export const layer = Layer.effect(
       return result.removedCount
     })
 
-    return Service.of({ createProject, get, list, plan, start, cancel, chat, compactBrain })
+    const workingTreeSummary = Effect.fn("Orchestrator.workingTreeSummary")(function* (projectID: string) {
+      const file = yield* Effect.promise(() => loadProject(projectID))
+      if (!file?.workspace) return undefined
+      const stats = yield* workingTreeStats(git, file.workspace)
+      return computeDiffstat(stats)
+    })
+
+    const workingTreeFiles = Effect.fn("Orchestrator.workingTreeFiles")(function* (projectID: string) {
+      const file = yield* Effect.promise(() => loadProject(projectID))
+      if (!file?.workspace) return []
+      const stats = yield* workingTreeStats(git, file.workspace)
+      return toFileDiffstats(stats)
+    })
+
+    return Service.of({ createProject, get, list, plan, start, cancel, chat, compactBrain, workingTreeSummary, workingTreeFiles })
   }),
 )
 

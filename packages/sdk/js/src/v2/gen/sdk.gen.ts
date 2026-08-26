@@ -10,6 +10,15 @@ import type {
   AppLogResponses,
   AppSkillsErrors,
   AppSkillsResponses,
+  AtlasBrainMemoriesErrors,
+  AtlasBrainMemoriesResponses,
+  AtlasBrainQueryErrors,
+  AtlasBrainQueryInput,
+  AtlasBrainQueryResponses,
+  AtlasMissionControlFileDiffstatErrors,
+  AtlasMissionControlFileDiffstatResponses,
+  AtlasMissionControlSnapshotErrors,
+  AtlasMissionControlSnapshotResponses,
   AtlasOrchestratorCancelErrors,
   AtlasOrchestratorCancelResponses,
   AtlasOrchestratorCreateErrors,
@@ -23,6 +32,8 @@ import type {
   AtlasOrchestratorRoadmapResponses,
   AtlasOrchestratorStartErrors,
   AtlasOrchestratorStartResponses,
+  AtlasReleaseCheckErrors,
+  AtlasReleaseCheckResponses,
   AtlasRoutingDecideErrors,
   AtlasRoutingDecideInput,
   AtlasRoutingDecideResponses,
@@ -3229,6 +3240,187 @@ export class Orchestrator extends HeyApiClient {
   }
 }
 
+export class Brain extends HeyApiClient {
+  /**
+   * Query the Project Brain
+   *
+   * Retrieves evidence-grounded answers from the project brain with source citations. Deterministic status queries are answered without model invocation.
+   */
+  public query<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+      atlasBrainQueryInput?: AtlasBrainQueryInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "atlasBrainQueryInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AtlasBrainQueryResponses, AtlasBrainQueryErrors, ThrowOnError>({
+      url: "/orchestrator/projects/{projectID}/brain/query",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * List project memories
+   *
+   * Returns all persisted brain memory items for this project.
+   */
+  public memories<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<AtlasBrainMemoriesResponses, AtlasBrainMemoriesErrors, ThrowOnError>({
+      url: "/orchestrator/projects/{projectID}/brain/memories",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class MissionControl extends HeyApiClient {
+  /**
+   * Get Mission Control snapshot
+   *
+   * Aggregated read-only view of project health, task counts, critical path and roadmap state. Computed from authoritative subsystems.
+   */
+  public snapshot<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasMissionControlSnapshotResponses,
+      AtlasMissionControlSnapshotErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/mission-control",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get file-by-file diffstat
+   *
+   * Per-file additions/deletions of the current working tree versus HEAD, computed from real git numstat. Binary files report binary=true without line counts.
+   */
+  public fileDiffstat<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasMissionControlFileDiffstatResponses,
+      AtlasMissionControlFileDiffstatErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/file-diffstat",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Release extends HeyApiClient {
+  /**
+   * Check release readiness
+   *
+   * Evaluates release gates against the current roadmap state. Ready only when all required gates pass with evidence.
+   */
+  public check<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<AtlasReleaseCheckResponses, AtlasReleaseCheckErrors, ThrowOnError>({
+      url: "/orchestrator/projects/{projectID}/release/check",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Atlas extends HeyApiClient {
   private _routing?: Routing
   get routing(): Routing {
@@ -3238,6 +3430,21 @@ export class Atlas extends HeyApiClient {
   private _orchestrator?: Orchestrator
   get orchestrator(): Orchestrator {
     return (this._orchestrator ??= new Orchestrator({ client: this.client }))
+  }
+
+  private _brain?: Brain
+  get brain(): Brain {
+    return (this._brain ??= new Brain({ client: this.client }))
+  }
+
+  private _missionControl?: MissionControl
+  get missionControl(): MissionControl {
+    return (this._missionControl ??= new MissionControl({ client: this.client }))
+  }
+
+  private _release?: Release
+  get release(): Release {
+    return (this._release ??= new Release({ client: this.client }))
   }
 }
 

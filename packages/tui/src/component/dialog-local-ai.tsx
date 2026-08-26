@@ -8,12 +8,15 @@ import { useToast } from "../ui/toast"
 import { useSDK } from "../context/sdk"
 import { useLocal } from "../context/local"
 import { useTheme } from "../context/theme"
+import { useRoute } from "../context/route"
 import type {
   LocalAiJob,
   LocalAiManagedArtifact,
   LocalAiManagedLogs,
   LocalAiRecommendation,
   LocalAiState,
+  AtlasFileDiffstat,
+  AtlasMissionControlSnapshot,
   AtlasOrchestratorRoadmap,
 } from "@opencode-ai/sdk/v2/types"
 
@@ -64,6 +67,54 @@ function formatContext(tokens: number | undefined) {
   if (!tokens) return "?"
   if (tokens >= 1024) return `${Math.round(tokens / 1024)}K`
   return String(tokens)
+}
+
+interface DiffstatSummaryView {
+  additions: number
+  deletions: number
+  files: number
+}
+
+function formatDiffstatLine(summary: DiffstatSummaryView): string {
+  return `+${summary.additions} −${summary.deletions} · ${summary.files} files`
+}
+
+/** Normalize a generated diffstat payload (JSON numbers may arrive as strings) */
+function toDiffstatView(value?: {
+  additions?: number | string
+  deletions?: number | string
+  files?: number | string
+}): DiffstatSummaryView | undefined {
+  if (!value) return undefined
+  const additions = num(value.additions)
+  const deletions = num(value.deletions)
+  const files = num(value.files)
+  if (additions === undefined || deletions === undefined || files === undefined) return undefined
+  return { additions, deletions, files }
+}
+
+/** Shared by the Mission Control snapshot loader and the live event subscription */
+export function diffstatEventSummary(properties?: {
+  additions?: number | string
+  deletions?: number | string
+  files?: number | string
+}): DiffstatSummaryView | undefined {
+  return toDiffstatView(properties)
+}
+
+/** Route snapshot the diff viewer needs to navigate back on close */
+export function diffReturnRoute(data: ReturnType<typeof useRoute>["data"]): Record<string, unknown> {
+  if (data.type === "session") return { name: "session", params: { sessionID: data.sessionID } }
+  if (data.type === "home") return { name: "home" }
+  return { name: data.id, ...(data.data ? { params: data.data } : {}) }
+}
+
+/** Compact Mission Control HUD row for the working-tree diffstat */
+export function diffstatHudRow(summary: DiffstatSummaryView | undefined): { title: string; description: string } {
+  return {
+    title: summary ? `Working tree ${formatDiffstatLine(summary)}` : "Working tree · no changes detected",
+    description: "Session: unknown · select for file-by-file diffstat",
+  }
 }
 
 function stars(score: number) {
@@ -123,26 +174,20 @@ export function DialogLocalAi() {
   const refresh = () => void load(PRESETS[presetIndex()].id)
 
   // ---- Mission Control reactive state ----
+  const [mc, setMc] = createSignal<AtlasMissionControlSnapshot>()
+  const [diffstat, setDiffstat] = createSignal<DiffstatSummaryView>()
+  const [activeProjectID, setActiveProjectID] = createSignal<string>()
+
   let mcRefreshTimer: ReturnType<typeof setTimeout> | undefined
   const scheduleMcRefresh = () => {
     if (mcRefreshTimer) return
     mcRefreshTimer = setTimeout(() => {
       mcRefreshTimer = undefined
       refresh()
+      const id = activeProjectID()
+      if (id) void loadMissionControl(id)
     }, 250)
   }
-
-  const missionControlRows = createMemo(() => {
-    const rm = roadmap()
-    if (!rm) return undefined
-    const complete = rm.tasks.filter((t) => t.status === "complete").length
-    const failed = rm.tasks.filter((t) => t.status === "failed").length
-    const blocked = rm.tasks.filter((t) => t.status === "blocked").length
-    const running = rm.tasks.filter((t) => t.status === "running" || t.status === "verifying")
-    const health =
-      blocked > 0 || failed > 0 ? "degraded" : rm.status === "complete" ? "healthy" : "executing"
-    return { rm, complete, failed, blocked, running, health }
-  })
 
   // Reactive control plane: lifecycle events patch managed rows in place;
   // anything broader triggers one coalesced authoritative refetch.
@@ -198,6 +243,12 @@ export function DialogLocalAi() {
       event.on("atlas.worker.failed" as never, () => scheduleMcRefresh()),
       event.on("atlas.supervisor.recovery.started" as never, () => scheduleMcRefresh()),
       event.on("atlas.supervisor.recovery.completed" as never, () => scheduleMcRefresh()),
+      // Diffstat updates arrive with the full summary; patch state directly so
+      // the compact HUD reacts without a snapshot refetch.
+      event.on("atlas.diffstat.changed", (payload) => {
+        if (payload.properties.projectID !== activeProjectID()) return
+        setDiffstat(diffstatEventSummary(payload.properties))
+      }),
     ]
     onCleanup(() => disposers.forEach((dispose) => dispose()))
   })
@@ -221,11 +272,53 @@ export function DialogLocalAi() {
   const [routingMode, setRoutingMode] = createSignal<string>("auto")
   const [roadmap, setRoadmap] = createSignal<AtlasOrchestratorRoadmap>()
 
+  // Mission Control rows prefer the backend snapshot read model; task detail
+  // comes from the project roadmap endpoint as today.
+  const missionControlRows = createMemo(() => {
+    const rm = roadmap()
+    if (!rm) return undefined
+    const snapshot = mc()?.projectID === activeProjectID() ? mc() : undefined
+    if (snapshot) {
+      return {
+        rm,
+        complete: num(snapshot.completeTasks) ?? 0,
+        failed: num(snapshot.failedTasks) ?? 0,
+        blocked: num(snapshot.blockedTasks) ?? 0,
+        running: rm.tasks.filter((t) => t.status === "running" || t.status === "verifying"),
+        health: snapshot.health,
+      }
+    }
+    const complete = rm.tasks.filter((t) => t.status === "complete").length
+    const failed = rm.tasks.filter((t) => t.status === "failed").length
+    const blocked = rm.tasks.filter((t) => t.status === "blocked").length
+    const running = rm.tasks.filter((t) => t.status === "running" || t.status === "verifying")
+    const health =
+      blocked > 0 || failed > 0 ? "degraded" : rm.status === "complete" ? "healthy" : "executing"
+    return { rm, complete, failed, blocked, running, health }
+  })
+
+  const loadMissionControl = async (projectID: string) => {
+    try {
+      const result = await sdk.client.atlas.missionControl.snapshot({ projectID })
+      if (!result.data) return
+      setActiveProjectID(projectID)
+      setMc(result.data)
+      setDiffstat(toDiffstatView(result.data.diffstat))
+    } catch {}
+  }
+
   const loadRoadmap = async (projectID: string) => {
     try {
       const result = await sdk.client.atlas.orchestrator.get({ projectID })
       if (result.data?.roadmap) setRoadmap(result.data.roadmap)
     } catch {}
+    await loadMissionControl(projectID)
+  }
+
+  const openDiffstatDrilldown = () => {
+    const id = activeProjectID()
+    if (!id) return
+    dialog.replace(() => <LocalAiDiffstatDetails projectID={id} />)
   }
 
   const promptForProject = () => {
@@ -410,6 +503,13 @@ export function DialogLocalAi() {
     // ---- Mission Control ----
     const mc = missionControlRows()
     if (mc) {
+      const hud = diffstatHudRow(diffstat())
+      rows.push({
+        title: hud.title,
+        description: hud.description,
+        category: "Mission Control",
+        value: { type: "diffstat-hud" as const },
+      })
       rows.push({
         title: `Health: ${mc.health}`,
         description: `${mc.complete} / ${mc.rm.tasks.length} complete · ${mc.running.length} running · ${mc.blocked} blocked · ${mc.failed} failed`,
@@ -597,6 +697,7 @@ export function DialogLocalAi() {
             const value = option.value as { type?: string; recommendation?: LocalAiRecommendation; artifactID?: string }
             if (value.type === "recommended" && value.recommendation) openRecommendation(value.recommendation)
             if (value.type === "managed" && value.artifactID) openManagedArtifact(value.artifactID)
+            if (value.type === "diffstat-hud") openDiffstatDrilldown()
           }}
         />
       </Match>
@@ -613,6 +714,93 @@ export function DialogLocalAi() {
 function ProgressBar(props: { percent: number }) {
   const filled = Math.round((props.percent / 100) * 24)
   return `${"█".repeat(filled)}${"░".repeat(24 - filled)} ${props.percent}%`
+}
+
+export function LocalAiDiffstatDetails(props: { projectID: string; onOpenFile?: (file: string) => void }) {
+  const sdk = useSDK()
+  const dialog = useDialog()
+  const route = useRoute()
+  const { theme } = useTheme()
+  const [files, setFiles] = createSignal<AtlasFileDiffstat[]>()
+  const [error, setError] = createSignal<string>()
+
+  const load = async () => {
+    setError(undefined)
+    try {
+      const result = await sdk.client.atlas.missionControl.fileDiffstat({ projectID: props.projectID })
+      if (result.data) setFiles(result.data)
+      else setError(result.error?.message ?? "Failed to load diffstat")
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load diffstat")
+    }
+  }
+
+  onMount(() => void load())
+
+  // Reuse the existing full diff viewer; it renders the working tree and
+  // focuses the requested file when opened from this drilldown.
+  const openFile = (file: string) => {
+    if (props.onOpenFile) {
+      props.onOpenFile(file)
+      return
+    }
+    dialog.clear()
+    route.navigate({
+      type: "plugin",
+      id: "diff",
+      data: { mode: "git", file, returnRoute: diffReturnRoute(route.data) },
+    })
+  }
+
+  const rows = createMemo(() => {
+    if (error()) return [{ title: `✗ ${error()}`, value: {} }]
+    const list = files()
+    if (!list) return [{ title: "Loading file diffstat...", value: {} }]
+    if (list.length === 0)
+      return [
+        {
+          title: "No working-tree changes",
+          description: "The workspace matches HEAD",
+          value: {},
+        },
+      ]
+    return list.map((file) => ({
+      title: file.path,
+      description: file.binary ? "binary" : `+${num(file.additions) ?? 0} −${num(file.deletions) ?? 0}`,
+      value: { type: "file" as const, path: file.path },
+    }))
+  })
+
+  return (
+    <DialogSelect
+      title={`Changed files · ${props.projectID}`}
+      placeholder="Filter files"
+      options={rows()}
+      onSelect={(option) => {
+        const value = option.value as { type?: string; path?: string }
+        if (value.type === "file" && value.path) openFile(value.path)
+      }}
+      actions={[
+        {
+          command: "local.ai.back",
+          title: "Back",
+          side: "left",
+          onTrigger: () => dialog.replace(() => <DialogLocalAi />),
+        },
+        {
+          command: "local.ai.diffstat-refresh",
+          title: "Refresh",
+          side: "right",
+          onTrigger: () => void load(),
+        },
+      ]}
+      footer={
+        <box paddingBottom={1}>
+          <text style={{ fg: theme.textMuted }}>Session: unknown · Working tree versus HEAD</text>
+        </box>
+      }
+    />
+  )
 }
 
 function LocalAiModelDetails(props: {

@@ -242,6 +242,42 @@ test("last-turn diff source requests session diff", async () => {
   }
 })
 
+test("a file param focuses the requested working-tree file after load", async () => {
+  const filler = Array.from({ length: 40 }, (_, index) => ` context ${index}`).join("\n")
+  const viewer = await renderDiffViewer(
+    [
+      {
+        file: "src/first.ts",
+        additions: 40,
+        deletions: 0,
+        status: "modified",
+        patch: `--- a/src/first.ts\n+++ b/src/first.ts\n@@ -1,40 +1,40 @@\n${filler}`,
+      },
+      {
+        file: "src/second.ts",
+        additions: 2,
+        deletions: 1,
+        status: "modified",
+        patch: `--- a/src/second.ts\n+++ b/src/second.ts\n@@ -1,2 +1,2 @@\n old\n-new\n+new`,
+      },
+    ],
+    20,
+    {
+      name: "diff",
+      params: { mode: "git", file: "src/second.ts", returnRoute: startRoute },
+    },
+  )
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("src/second.ts"))
+    await viewer.app.waitFor(() => {
+      const scroll = findScrollBox(viewer.app.renderer.root)
+      return scroll !== undefined && scroll.scrollTop > 0
+    })
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
 async function waitForCommand(
   app: Awaited<ReturnType<typeof testRender>>,
   commands: Map<string, unknown>,

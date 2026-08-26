@@ -68,6 +68,16 @@ export const ProjectCancelled = Event.define({
   schema: { projectID: Schema.String },
 })
 
+export const DiffstatChanged = Event.define({
+  type: "atlas.diffstat.changed",
+  schema: {
+    projectID: Schema.String,
+    additions: Schema.Number,
+    deletions: Schema.Number,
+    files: Schema.Number,
+  },
+})
+
 export const Definitions = Event.inventory(
   ProjectCreated,
   RoadmapUpdated,
@@ -79,4 +89,5 @@ export const Definitions = Event.inventory(
   ProjectCompleted,
   ProjectBlocked,
   ProjectCancelled,
+  DiffstatChanged,
 )

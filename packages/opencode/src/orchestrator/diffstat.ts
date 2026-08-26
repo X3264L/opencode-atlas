@@ -9,6 +9,14 @@ export interface DiffstatSummary {
   files: number
 }
 
+export interface FileDiffstat {
+  path: string
+  /** Absent for binary files; git numstat reports no line counts for them */
+  additions?: number
+  deletions?: number
+  binary: boolean
+}
+
 export function computeDiffstat(stats: readonly { file: string; additions: number; deletions: number }[]): DiffstatSummary {
   let additions = 0
   let deletions = 0
@@ -24,4 +32,12 @@ export function computeDiffstat(stats: readonly { file: string; additions: numbe
 
 export function formatDiffstat(summary: DiffstatSummary): string {
   return `+${summary.additions} −${summary.deletions} · ${summary.files} files`
+}
+
+export function toFileDiffstats(stats: readonly Stat[]): FileDiffstat[] {
+  return stats.map((stat) => ({
+    path: stat.file,
+    ...(stat.binary ? {} : { additions: stat.additions, deletions: stat.deletions }),
+    binary: stat.binary === true,
+  }))
 }

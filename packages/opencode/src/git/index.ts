@@ -45,6 +45,8 @@ export type Stat = {
   readonly file: string
   readonly additions: number
   readonly deletions: number
+  /** git numstat reports "-" for binary files; no line counts exist */
+  readonly binary?: boolean
 }
 
 export type Patch = {
@@ -255,6 +257,7 @@ const layer = Layer.effect(
             file,
             additions: Number.isFinite(additions) ? additions : 0,
             deletions: Number.isFinite(deletions) ? deletions : 0,
+            ...(adds === "-" || dels === "-" ? { binary: true } : {}),
           } satisfies Stat,
         ]
       })
@@ -316,6 +319,7 @@ const layer = Layer.effect(
         file,
         additions: Number.isFinite(additions) ? additions : 0,
         deletions: Number.isFinite(deletions) ? deletions : 0,
+        ...(parts[0] === "-" || parts[1] === "-" ? { binary: true } : {}),
       } satisfies Stat
     })
 
