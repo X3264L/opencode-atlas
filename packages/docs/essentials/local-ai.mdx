@@ -69,6 +69,17 @@ When routing is opted in and a prompt carries no explicit model (no request over
 
 Fallback transitions emit `atlas.routing.fallback` events; the TUI surfaces them as concise toasts.
 
+## Project orchestrator (experimental)
+
+`POST /orchestrator/projects` turns one typed objective into a **project**: roadmap IR → dependency DAG → compiled worker contracts → scheduled child-session workers → per-task verification → integration → project verification.
+
+- Roadmaps are versioned and validated (cycles, unknown deps, duplicates and self-deps are rejected; invalid planner output is normalized once or never executed).
+- Independent tasks run in parallel within `maxConcurrentWorkers`; overlapping write scopes serialize; dependent tasks wait.
+- A task completes only after its verification steps pass; projects complete only after integration and final verification.
+- Workers run as child sessions through the normal prompt pipeline — their models come from Atlas routing at execution time, honoring privacy walls and cost caps.
+- Checkpoints/artifacts persist under the Atlas state dir; stale running workers from an earlier process are recovered as interrupted, never left falsely running.
+- Typed events (`atlas.project.*`, `atlas.task.state`, `atlas.worker.*`, `atlas.verification.completed`) stream over the standard event channel.
+
 ## Runtime events
 
 Local AI publishes typed events through OpenCode's standard event stream (`/event`, `/global/event`):

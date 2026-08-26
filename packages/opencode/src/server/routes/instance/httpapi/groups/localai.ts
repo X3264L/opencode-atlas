@@ -375,6 +375,64 @@ export const RoutingPaths = {
   routingDecide: "/router/decide",
 } as const
 
+// ---- Project orchestrator ----------------------------------------------------
+
+export const OrchestratorCreatePayload = Schema.Struct({
+  title: Schema.String,
+  description: Schema.String,
+  acceptanceCriteria: Schema.Array(Schema.String),
+  constraints: Schema.optionalKey(Schema.Array(Schema.String)),
+  priorities: Schema.optionalKey(Schema.Array(Schema.String)),
+}).annotate({ identifier: "AtlasOrchestratorCreateInput" })
+
+export const OrchestratorTaskInfo = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  status: Schema.Literals([
+    "planned",
+    "ready",
+    "running",
+    "blocked",
+    "verifying",
+    "complete",
+    "failed",
+    "cancelled",
+  ]),
+  dependencies: Schema.Array(Schema.String),
+  acceptanceCriteria: Schema.Array(Schema.String),
+  workerProfile: Schema.optionalKey(Schema.String),
+  priority: Schema.Number,
+  attempt: Schema.Number,
+  maxAttempts: Schema.Number,
+}).annotate({ identifier: "AtlasOrchestratorTask" })
+
+export const OrchestratorRoadmap = Schema.Struct({
+  version: Schema.Number,
+  objectiveID: Schema.String,
+  status: Schema.Literals(["planning", "executing", "verifying", "complete", "blocked", "cancelled"]),
+  tasks: Schema.Array(OrchestratorTaskInfo),
+}).annotate({ identifier: "AtlasOrchestratorRoadmap" })
+
+export const OrchestratorProject = Schema.Struct({
+  projectID: Schema.String,
+  objective: Schema.Struct({
+    id: Schema.String,
+    title: Schema.String,
+    description: Schema.String,
+    acceptanceCriteria: Schema.Array(Schema.String),
+  }),
+  roadmap: OrchestratorRoadmap,
+}).annotate({ identifier: "AtlasOrchestratorProject" })
+
+export const OrchestratorPaths = {
+  projects: "/orchestrator/projects",
+  project: "/orchestrator/projects/:projectID",
+  projectPlan: "/orchestrator/projects/:projectID/plan",
+  projectStart: "/orchestrator/projects/:projectID/start",
+  projectCancel: "/orchestrator/projects/:projectID/cancel",
+  projectRoadmap: "/orchestrator/projects/:projectID/roadmap",
+} as const
+
 export const JobResponse = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(["install", "benchmark", "readiness"]),
@@ -400,6 +458,7 @@ export const LocalAiPaths = {
   preference: "/localai/preference",
   ...ManagedPaths,
   ...RoutingPaths,
+  ...OrchestratorPaths,
 } as const
 
 export const LocalAiApi = HttpApi.make("localai")
@@ -640,6 +699,81 @@ export const LocalAiApi = HttpApi.make("localai")
             summary: "Resolve execution path",
             description:
               "Runs the deterministic Atlas router over current local/cloud candidates and returns the selected provider/model with reason codes, alternatives, and a bounded fallback plan. Never executes inference.",
+          }),
+        ),
+        HttpApiEndpoint.post("orchestratorProjects", LocalAiPaths.projects, {
+          query: WorkspaceRoutingQuery,
+          payload: OrchestratorCreatePayload,
+          success: described(OrchestratorProject, "Created project"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.orchestrator.create",
+            summary: "Create a project objective",
+            description:
+              "Registers a typed project objective (goal, acceptance criteria, constraints, priorities). Planning and execution are separate steps.",
+          }),
+        ),
+        HttpApiEndpoint.get("orchestratorProject", LocalAiPaths.project, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(OrchestratorProject, "Project with roadmap"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.orchestrator.get",
+            summary: "Get project state",
+            description: "Returns the persisted objective, roadmap IR, task states, artifacts and checkpoints.",
+          }),
+        ),
+        HttpApiEndpoint.post("orchestratorPlan", LocalAiPaths.projectPlan, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(OrchestratorRoadmap, "Validated roadmap"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.orchestrator.plan",
+            summary: "Plan the project roadmap",
+            description: "Decomposes the objective into validated roadmap IR with a dependency DAG.",
+          }),
+        ),
+        HttpApiEndpoint.post("orchestratorStart", LocalAiPaths.projectStart, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Struct({ started: Schema.Boolean }), "Start accepted"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.orchestrator.start",
+            summary: "Start roadmap execution",
+            description:
+              "Schedules workers over the dependency DAG with bounded concurrency. Workers execute as child sessions; models come from Atlas routing.",
+          }),
+        ),
+        HttpApiEndpoint.post("orchestratorCancel", LocalAiPaths.projectCancel, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Cancellation accepted"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.orchestrator.cancel",
+            summary: "Cancel a project",
+            description:
+              "Stops scheduling, cancels active workers, preserves checkpoints/artifacts, and marks remaining tasks cancelled.",
+          }),
+        ),
+        HttpApiEndpoint.get("orchestratorRoadmap", LocalAiPaths.projectRoadmap, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(OrchestratorRoadmap, "Project roadmap IR"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.orchestrator.roadmap",
+            summary: "Get project roadmap",
+            description: "Returns the versioned roadmap IR including per-task status and dependencies.",
           }),
         ),
       )

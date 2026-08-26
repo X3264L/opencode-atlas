@@ -104,6 +104,16 @@ export type Event =
   | EventLocalaiProviderChanged
   | EventAtlasRoutingDecision
   | EventAtlasRoutingFallback
+  | EventAtlasProjectCreated
+  | EventAtlasRoadmapUpdated
+  | EventAtlasTaskState
+  | EventAtlasWorkerStarted
+  | EventAtlasWorkerCompleted
+  | EventAtlasWorkerFailed
+  | EventAtlasVerificationCompleted
+  | EventAtlasProjectCompleted
+  | EventAtlasProjectBlocked
+  | EventAtlasProjectCancelled
   | EventServerInstanceDisposed
 
 export type QuestionReplied = {
@@ -1745,6 +1755,90 @@ export type GlobalEvent = {
           reasonCodes: Array<string>
         }
       }
+    | {
+        id: string
+        type: "atlas.project.created"
+        properties: {
+          projectID: string
+          title: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.roadmap.updated"
+        properties: {
+          projectID: string
+          version: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.task.state"
+        properties: {
+          projectID: string
+          taskID: string
+          state: string
+          attempt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+        }
+      }
+    | {
+        id: string
+        type: "atlas.worker.started"
+        properties: {
+          projectID: string
+          taskID: string
+          profile?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.worker.completed"
+        properties: {
+          projectID: string
+          taskID: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.worker.failed"
+        properties: {
+          projectID: string
+          taskID: string
+          failureClass: string
+          detail?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.verification.completed"
+        properties: {
+          projectID: string
+          taskID: string
+          passed: boolean
+        }
+      }
+    | {
+        id: string
+        type: "atlas.project.completed"
+        properties: {
+          projectID: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.project.blocked"
+        properties: {
+          projectID: string
+          reason?: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.project.cancelled"
+        properties: {
+          projectID: string
+        }
+      }
     | EventServerInstanceDisposed
     | SyncEventSessionCreated
     | SyncEventSessionUpdated
@@ -2888,6 +2982,44 @@ export type AtlasRoutingDecision = {
   }
 }
 
+export type AtlasOrchestratorCreateInput = {
+  title: string
+  description: string
+  acceptanceCriteria: Array<string>
+  constraints?: Array<string>
+  priorities?: Array<string>
+}
+
+export type AtlasOrchestratorTask = {
+  id: string
+  title: string
+  status: "planned" | "ready" | "running" | "blocked" | "verifying" | "complete" | "failed" | "cancelled"
+  dependencies: Array<string>
+  acceptanceCriteria: Array<string>
+  workerProfile?: string
+  priority: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  attempt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  maxAttempts: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type AtlasOrchestratorRoadmap = {
+  version: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  objectiveID: string
+  status: "planning" | "executing" | "verifying" | "complete" | "blocked" | "cancelled"
+  tasks: Array<AtlasOrchestratorTask>
+}
+
+export type AtlasOrchestratorProject = {
+  projectID: string
+  objective: {
+    id: string
+    title: string
+    description: string
+    acceptanceCriteria: Array<string>
+  }
+  roadmap: AtlasOrchestratorRoadmap
+}
+
 export type McpStatusConnected = {
   status: "connected"
 }
@@ -3483,6 +3615,16 @@ export type V2Event =
   | LocalaiProviderChanged
   | AtlasRoutingDecision2
   | AtlasRoutingFallback
+  | AtlasProjectCreated
+  | AtlasRoadmapUpdated
+  | AtlasTaskState
+  | AtlasWorkerStarted
+  | AtlasWorkerCompleted
+  | AtlasWorkerFailed
+  | AtlasVerificationCompleted
+  | AtlasProjectCompleted
+  | AtlasProjectBlocked
+  | AtlasProjectCancelled
 
 export type V2EventStream = string
 
@@ -6866,6 +7008,190 @@ export type AtlasRoutingFallback = {
   }
 }
 
+export type AtlasProjectCreated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.created"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    title: string
+  }
+}
+
+export type AtlasRoadmapUpdated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.roadmap.updated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    version: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasTaskState = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.task.state"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+    state: string
+    attempt: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type AtlasWorkerStarted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.worker.started"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+    profile?: string
+  }
+}
+
+export type AtlasWorkerCompleted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.worker.completed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+  }
+}
+
+export type AtlasWorkerFailed = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.worker.failed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+    failureClass: string
+    detail?: string
+  }
+}
+
+export type AtlasVerificationCompleted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.verification.completed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    taskID: string
+    passed: boolean
+  }
+}
+
+export type AtlasProjectCompleted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.completed"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+  }
+}
+
+export type AtlasProjectBlocked = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.blocked"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    reason?: string
+  }
+}
+
+export type AtlasProjectCancelled = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.cancelled"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+  }
+}
+
 export type QuestionV2Request = {
   id: string
   sessionID: string
@@ -7955,6 +8281,100 @@ export type EventAtlasRoutingFallback = {
     toModelID?: string
     failureKind: string
     reasonCodes: Array<string>
+  }
+}
+
+export type EventAtlasProjectCreated = {
+  id: string
+  type: "atlas.project.created"
+  properties: {
+    projectID: string
+    title: string
+  }
+}
+
+export type EventAtlasRoadmapUpdated = {
+  id: string
+  type: "atlas.roadmap.updated"
+  properties: {
+    projectID: string
+    version: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasTaskState = {
+  id: string
+  type: "atlas.task.state"
+  properties: {
+    projectID: string
+    taskID: string
+    state: string
+    attempt: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasWorkerStarted = {
+  id: string
+  type: "atlas.worker.started"
+  properties: {
+    projectID: string
+    taskID: string
+    profile?: string
+  }
+}
+
+export type EventAtlasWorkerCompleted = {
+  id: string
+  type: "atlas.worker.completed"
+  properties: {
+    projectID: string
+    taskID: string
+  }
+}
+
+export type EventAtlasWorkerFailed = {
+  id: string
+  type: "atlas.worker.failed"
+  properties: {
+    projectID: string
+    taskID: string
+    failureClass: string
+    detail?: string
+  }
+}
+
+export type EventAtlasVerificationCompleted = {
+  id: string
+  type: "atlas.verification.completed"
+  properties: {
+    projectID: string
+    taskID: string
+    passed: boolean
+  }
+}
+
+export type EventAtlasProjectCompleted = {
+  id: string
+  type: "atlas.project.completed"
+  properties: {
+    projectID: string
+  }
+}
+
+export type EventAtlasProjectBlocked = {
+  id: string
+  type: "atlas.project.blocked"
+  properties: {
+    projectID: string
+    reason?: string
+  }
+}
+
+export type EventAtlasProjectCancelled = {
+  id: string
+  type: "atlas.project.cancelled"
+  properties: {
+    projectID: string
   }
 }
 
@@ -9881,6 +10301,187 @@ export type AtlasRoutingDecideResponses = {
 }
 
 export type AtlasRoutingDecideResponse = AtlasRoutingDecideResponses[keyof AtlasRoutingDecideResponses]
+
+export type AtlasOrchestratorCreateData = {
+  body?: AtlasOrchestratorCreateInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects"
+}
+
+export type AtlasOrchestratorCreateErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasOrchestratorCreateError = AtlasOrchestratorCreateErrors[keyof AtlasOrchestratorCreateErrors]
+
+export type AtlasOrchestratorCreateResponses = {
+  /**
+   * Created project
+   */
+  200: AtlasOrchestratorProject
+}
+
+export type AtlasOrchestratorCreateResponse = AtlasOrchestratorCreateResponses[keyof AtlasOrchestratorCreateResponses]
+
+export type AtlasOrchestratorGetData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}"
+}
+
+export type AtlasOrchestratorGetErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasOrchestratorGetError = AtlasOrchestratorGetErrors[keyof AtlasOrchestratorGetErrors]
+
+export type AtlasOrchestratorGetResponses = {
+  /**
+   * Project with roadmap
+   */
+  200: AtlasOrchestratorProject
+}
+
+export type AtlasOrchestratorGetResponse = AtlasOrchestratorGetResponses[keyof AtlasOrchestratorGetResponses]
+
+export type AtlasOrchestratorPlanData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/plan"
+}
+
+export type AtlasOrchestratorPlanErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasOrchestratorPlanError = AtlasOrchestratorPlanErrors[keyof AtlasOrchestratorPlanErrors]
+
+export type AtlasOrchestratorPlanResponses = {
+  /**
+   * Validated roadmap
+   */
+  200: AtlasOrchestratorRoadmap
+}
+
+export type AtlasOrchestratorPlanResponse = AtlasOrchestratorPlanResponses[keyof AtlasOrchestratorPlanResponses]
+
+export type AtlasOrchestratorStartData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/start"
+}
+
+export type AtlasOrchestratorStartErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasOrchestratorStartError = AtlasOrchestratorStartErrors[keyof AtlasOrchestratorStartErrors]
+
+export type AtlasOrchestratorStartResponses = {
+  /**
+   * Start accepted
+   */
+  200: {
+    started: boolean
+  }
+}
+
+export type AtlasOrchestratorStartResponse = AtlasOrchestratorStartResponses[keyof AtlasOrchestratorStartResponses]
+
+export type AtlasOrchestratorCancelData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/cancel"
+}
+
+export type AtlasOrchestratorCancelErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasOrchestratorCancelError = AtlasOrchestratorCancelErrors[keyof AtlasOrchestratorCancelErrors]
+
+export type AtlasOrchestratorCancelResponses = {
+  /**
+   * Cancellation accepted
+   */
+  200: boolean
+}
+
+export type AtlasOrchestratorCancelResponse = AtlasOrchestratorCancelResponses[keyof AtlasOrchestratorCancelResponses]
+
+export type AtlasOrchestratorRoadmapData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/roadmap"
+}
+
+export type AtlasOrchestratorRoadmapErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasOrchestratorRoadmapError = AtlasOrchestratorRoadmapErrors[keyof AtlasOrchestratorRoadmapErrors]
+
+export type AtlasOrchestratorRoadmapResponses = {
+  /**
+   * Project roadmap IR
+   */
+  200: AtlasOrchestratorRoadmap
+}
+
+export type AtlasOrchestratorRoadmapResponse =
+  AtlasOrchestratorRoadmapResponses[keyof AtlasOrchestratorRoadmapResponses]
 
 export type McpStatusData = {
   body?: never

@@ -14,6 +14,7 @@ import type {
   LocalAiManagedLogs,
   LocalAiRecommendation,
   LocalAiState,
+  AtlasOrchestratorRoadmap,
 } from "@opencode-ai/sdk/v2/types"
 
 type VariantEvaluation = LocalAiRecommendation["alternatives"][number]
@@ -189,12 +190,30 @@ export function DialogLocalAi() {
   }
 
   const [routingMode, setRoutingMode] = createSignal<string>("auto")
+  const [roadmap, setRoadmap] = createSignal<AtlasOrchestratorRoadmap>()
 
-  onMount(() => {
-    void sdk.client.atlas.routing.state().then((result) => {
-      if (result.data) setRoutingMode(result.data.mode)
-    })
-  })
+  const loadRoadmap = async (projectID: string) => {
+    try {
+      const result = await sdk.client.atlas.orchestrator.get({ projectID })
+      if (result.data?.roadmap) setRoadmap(result.data.roadmap)
+    } catch {}
+  }
+
+  const promptForProject = () => {
+    dialog.replace(
+      () => (
+        <DialogPrompt
+          title="Project ID"
+          placeholder="proj-..."
+          onConfirm={(value) => {
+            void loadRoadmap(value.trim())
+            dialog.replace(() => <DialogLocalAi />)
+          }}
+          onCancel={() => dialog.replace(() => <DialogLocalAi />)}
+        />
+      ),
+    )
+  }
 
   const cycleRoutingMode = async () => {
     const index = ROUTING_MODES.indexOf(routingMode() as (typeof ROUTING_MODES)[number])
@@ -404,6 +423,33 @@ export function DialogLocalAi() {
       })
     }
 
+    const rm = roadmap()
+    if (rm) {
+      for (const task of rm.tasks) {
+        const icon =
+          task.status === "complete"
+            ? "✓"
+            : task.status === "running" || task.status === "verifying"
+              ? "●"
+              : task.status === "failed"
+                ? "✗"
+                : "○"
+        rows.push({
+          title: `${icon} ${task.title}`,
+          description: [
+            task.status,
+            task.dependencies.length > 0 ? `after ${task.dependencies.join(", ")}` : undefined,
+            `attempt ${task.attempt}/${task.maxAttempts}`,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          category: `Project roadmap v${rm.version}`,
+          value: {},
+          disabled: true,
+        })
+      }
+    }
+
     value.recommendations.forEach((recommendation, index) => {
       const score = num(recommendation.score) ?? 0
       const ctx = formatContext(num(recommendation.estimated?.contextLength))
@@ -465,6 +511,11 @@ export function DialogLocalAi() {
               command: "local.ai.import-gguf",
               title: "Import GGUF",
               onTrigger: importGguf,
+            },
+            {
+              command: "local.ai.project-roadmap",
+              title: "Load project roadmap",
+              onTrigger: promptForProject,
             },
             {
               command: "local.ai.llama-server-path",

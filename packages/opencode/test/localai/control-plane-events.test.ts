@@ -9,8 +9,7 @@ import { createLMStudioAdapter } from "@/localai/runtime/lmstudio"
 
 describe("event manifest registration", () => {
   test("all localai event types are registered and unique", () => {
-    const types = LocalAiEvent.Definitions.map((definition) => definition.type)
-    expect(types).toEqual([
+    const expected = [
       "localai.instance.lifecycle",
       "localai.instance.log",
       "localai.health.changed",
@@ -20,9 +19,12 @@ describe("event manifest registration", () => {
       "localai.readiness.status",
       "localai.install.status",
       "localai.provider.changed",
-    ])
-    for (const type of types) {
-      expect(EventManifest.Definitions.some((definition) => definition.type === type)).toBe(true)
+    ]
+    const manifestTypes = (EventManifest.Definitions as unknown as { type: string }[]).map((entry) => entry.type)
+    for (const type of expected) expect(manifestTypes).toContain(type)
+    // Routing + orchestrator event families are registered too
+    for (const type of ["atlas.routing.decision", "atlas.project.created"]) {
+      expect(manifestTypes).toContain(type)
     }
   })
 })

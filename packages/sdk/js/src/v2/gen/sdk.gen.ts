@@ -10,6 +10,19 @@ import type {
   AppLogResponses,
   AppSkillsErrors,
   AppSkillsResponses,
+  AtlasOrchestratorCancelErrors,
+  AtlasOrchestratorCancelResponses,
+  AtlasOrchestratorCreateErrors,
+  AtlasOrchestratorCreateInput,
+  AtlasOrchestratorCreateResponses,
+  AtlasOrchestratorGetErrors,
+  AtlasOrchestratorGetResponses,
+  AtlasOrchestratorPlanErrors,
+  AtlasOrchestratorPlanResponses,
+  AtlasOrchestratorRoadmapErrors,
+  AtlasOrchestratorRoadmapResponses,
+  AtlasOrchestratorStartErrors,
+  AtlasOrchestratorStartResponses,
   AtlasRoutingDecideErrors,
   AtlasRoutingDecideInput,
   AtlasRoutingDecideResponses,
@@ -2993,10 +3006,238 @@ export class Routing extends HeyApiClient {
   }
 }
 
+export class Orchestrator extends HeyApiClient {
+  /**
+   * Create a project objective
+   *
+   * Registers a typed project objective (goal, acceptance criteria, constraints, priorities). Planning and execution are separate steps.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      atlasOrchestratorCreateInput?: AtlasOrchestratorCreateInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "atlasOrchestratorCreateInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AtlasOrchestratorCreateResponses,
+      AtlasOrchestratorCreateErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Get project state
+   *
+   * Returns the persisted objective, roadmap IR, task states, artifacts and checkpoints.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasOrchestratorGetResponses,
+      AtlasOrchestratorGetErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Plan the project roadmap
+   *
+   * Decomposes the objective into validated roadmap IR with a dependency DAG.
+   */
+  public plan<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AtlasOrchestratorPlanResponses,
+      AtlasOrchestratorPlanErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/plan",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Start roadmap execution
+   *
+   * Schedules workers over the dependency DAG with bounded concurrency. Workers execute as child sessions; models come from Atlas routing.
+   */
+  public start<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AtlasOrchestratorStartResponses,
+      AtlasOrchestratorStartErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/start",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Cancel a project
+   *
+   * Stops scheduling, cancels active workers, preserves checkpoints/artifacts, and marks remaining tasks cancelled.
+   */
+  public cancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AtlasOrchestratorCancelResponses,
+      AtlasOrchestratorCancelErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/cancel",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get project roadmap
+   *
+   * Returns the versioned roadmap IR including per-task status and dependencies.
+   */
+  public roadmap<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      AtlasOrchestratorRoadmapResponses,
+      AtlasOrchestratorRoadmapErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/roadmap",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Atlas extends HeyApiClient {
   private _routing?: Routing
   get routing(): Routing {
     return (this._routing ??= new Routing({ client: this.client }))
+  }
+
+  private _orchestrator?: Orchestrator
+  get orchestrator(): Orchestrator {
+    return (this._orchestrator ??= new Orchestrator({ client: this.client }))
   }
 }
 
