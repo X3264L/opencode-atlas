@@ -41,7 +41,12 @@ export interface RoutedCallInput {
   privacy?: PrivacyPolicy
 }
 
-export class IntelligenceError extends Error {}
+export class IntelligenceError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "IntelligenceError"
+  }
+}
 
 // ---- Structured output primitives ---------------------------------------------
 
@@ -105,7 +110,6 @@ export function runRoutedCompletion(deps: RoutedDeps, input: RoutedCallInput): E
         ...(input.estimatedInputTokens !== undefined ? { estimatedInputTokens: input.estimatedInputTokens } : {}),
         ...(input.privacy ? { workspacePrivacy: input.privacy } : {}),
       })
-      .pipe(Effect.mapError((error) => new IntelligenceError(`router decide failed: ${String(error)}`)))
 
     const selected = decision.selected
     // bypassed means an explicit user override hijacked routing — intelligence
@@ -117,7 +121,6 @@ export function runRoutedCompletion(deps: RoutedDeps, input: RoutedCallInput): E
 
     const scratch = yield* deps.sessions
       .create({ title: `[atlas:${input.purpose}]` })
-      .pipe(Effect.mapError((error) => new IntelligenceError(`scratch session create failed: ${String(error)}`)))
 
     const reply = yield* deps.promptService
       .prompt({
@@ -130,12 +133,29 @@ export function runRoutedCompletion(deps: RoutedDeps, input: RoutedCallInput): E
         },
         parts: [{ type: "text", text: input.userText }],
       })
-      .pipe(Effect.mapError((error) => new IntelligenceError(`routed model execution failed: ${String(error)}`)))
+
+    // The model's authoritative reply lives in the scratch session transcript.
+    let text =
+      ([...reply.parts].reverse().find((part) => part.type === "text") as unknown as { text?: string } | undefined)
+        ?.text ?? ""
+    if (!text) {
+      // The reply may only be visible through the session transcript (async
+      // durable projection); poll briefly before giving up.
+      for (let attempt = 0; attempt < 24; attempt++) {
+        const transcript = yield* deps.sessions
+          .messages({ sessionID: scratch.id })
+          .pipe(Effect.orElseSucceed(() => []))
+        const found = [...transcript]
+          .reverse()
+          .flatMap((entry) => entry.parts)
+          .find((part) => part.type === "text" && (part as unknown as { text?: string }).text)
+        text = (found as unknown as { text?: string } | undefined)?.text ?? ""
+        if (text) break
+        yield* Effect.sleep("50 millis")
+      }
+    }
 
     yield* deps.sessions.remove(scratch.id).pipe(Effect.catch(() => Effect.void))
-
-    const lastText = [...reply.parts].reverse().find((part) => part.type === "text")
-    const text = (lastText as unknown as { text?: string })?.text ?? ""
     return {
       text,
       providerID: selected.providerID,

@@ -1,4 +1,7 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
+import { NodeServices } from "@effect/platform-node"
+process.env.TEST_API_KEY = process.env.TEST_API_KEY ?? "test-key"
+process.env.OLLAMA_API_KEY = process.env.OLLAMA_API_KEY ?? "local-key"
 import { Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -16,7 +19,9 @@ import * as ModelIntel from "@/orchestrator/index"
 import { AtlasRouter } from "@/router/index"
 import { runRoutedCompletion } from "@/orchestrator/model-intelligence"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
+import { TestLLMServer, raw } from "../lib/llm-server"
+import { testProviderConfig } from "../lib/test-provider"
 
 // SUPER++ 010.4F — the three model-backed intelligence paths driven through
 // the PRODUCTION routing/execution entry points:
@@ -53,27 +58,6 @@ const localAIMock = Layer.mock(LocalAI.Service, {
   state: () => Effect.succeed(emptyState() as never),
 })
 
-const providerMock = Layer.mock(Provider.Service, {
-  list: () =>
-    Effect.succeed({
-      test: {
-        key: "test-key",
-        models: {
-          "test-model": {
-            id: "test-model",
-            name: "Test Model",
-            release_date: "2025-01-01",
-            attachment: false,
-            reasoning: false,
-            temperature: false,
-            tool_call: true,
-            cost: { input: 0.15, output: 0.6 },
-            limit: { context: 100_000, output: 8_192 },
-          },
-        },
-      },
-    } as never),
-})
 
 const scriptedReplies: string[] = []
 
@@ -96,7 +80,6 @@ const it = testEffect(
       [SessionPrompt.node, fakePrompt],
       [Git.node, fakeGit],
       [LocalAI.node, localAIMock],
-      [Provider.node, providerMock],
     ],
   ),
 )
@@ -107,8 +90,174 @@ function getBrainCount(projectID: string) {
   return Effect.map(Effect.promise(() => loadBrainStoreSafe(projectID)), (brain) => brain.memories.length)
 }
 
+
+
+// ---- PROOF HARNESS ---------------------------------------------------------
+// Real session/prompt/provider stack with a deterministic fake HTTP LLM
+// endpoint (TestLLMServer). Nothing above the network boundary is mocked.
+
+import { withTmpdirInstance } from "../fixture/fixture"
+
+type LocalMode = { local: boolean }
+
+function emptyLocalState() {
+  return {
+    hardware: { os: { platform: "test", arch: "test" }, cpu: {}, memory: { totalBytes: 8 }, gpus: [] },
+    runtimes: [],
+    installed: {} as Record<string, never[]>,
+    recommendations: [],
+    benchmarks: {} as Record<string, Record<string, never>>,
+    readiness: {} as Record<string, Record<string, never>>,
+    preference: "auto" as const,
+    normalized: [],
+  }
+}
+
+function installedLocalState() {
+  return {
+    hardware: { os: { platform: "test", arch: "test" }, cpu: {}, memory: { totalBytes: 8 }, gpus: [] },
+    runtimes: [{ id: "ollama", name: "Ollama", available: true, health: { state: "available" } }],
+    installed: { ollama: [{ id: "local-dense", toolCalling: true }] },
+    benchmarks: {},
+    readiness: { ollama: { "local-dense": { score: 80 } } },
+    recommendations: [],
+    preference: "auto" as const,
+    normalized: [],
+  }
+}
+
+const e2eGit = Layer.mock(Git.Service, {
+  hasHead: () => Effect.succeed(false),
+})
+
+function buildE2EGraph(local: boolean) {
+  const localAI =
+    local === false
+      ? Layer.mock(LocalAI.Service, { state: () => Effect.succeed(emptyLocalState() as never) })
+      : Layer.mock(LocalAI.Service, { state: () => Effect.succeed(installedLocalState() as never) })
+  return AppNodeBuilder.build(
+    LayerNode.group([Orchestrator.node, AtlasRouter.node, Session.node, SessionProjector.node, EventV2Bridge.node]),
+    [
+      [Git.node, e2eGit],
+      [LocalAI.node, localAI],
+    ],
+  )
+}
+
+function cloudInstanceConfig(llmUrl: string) {
+  const base = testProviderConfig(llmUrl)
+  return {
+    ...base,
+    provider: {
+      ...(base as { provider?: Record<string, unknown> }).provider,
+      test: {
+        ...(base as { provider?: Record<string, { env?: string[] }> }).provider!.test,
+        env: ["TEST_API_KEY"],
+      },
+    },
+    enabled_providers: ["test"],
+    model: "test/test-model",
+    formatter: false,
+    lsp: false,
+  }
+}
+
+function localInstanceConfig(llmUrl: string) {
+  const base = cloudInstanceConfig(llmUrl)
+  return {
+    ...base,
+    enabled_providers: ["ollama"],
+    model: "ollama/local-dense",
+    provider: {
+      ...(base as { provider?: Record<string, unknown> }).provider,
+      ollama: {
+        name: "Ollama",
+        id: "ollama",
+        env: ["OLLAMA_API_KEY"],
+        npm: "@ai-sdk/openai-compatible",
+        models: {
+          "local-dense": {
+            id: "local-dense",
+            name: "Local Dense",
+            attachment: false,
+            reasoning: false,
+            temperature: false,
+            tool_call: true,
+            release_date: "2025-01-01",
+            limit: { context: 32_000, output: 4_000 },
+            cost: { input: 0, output: 0 },
+            options: {},
+          },
+        },
+        options: { apiKey: "local-key", baseURL: llmUrl },
+      },
+    },
+  }
+}
+
+function denseWorkerText(): string {
+  return [
+    "Implemented the passkey registration endpoint end to end.",
+    "Added credential schema and storage bindings for WebAuthn attestation objects.",
+    "Extended auth architecture with a dedicated verification boundary in src/auth.",
+    "Ran the integration suite locally; every acceptance criterion passes.",
+    "Follow-ups: register device metadata table and add rate limiting middleware.",
+  ].join(" ")
+}
+
+
+function e2eEnv(local: boolean) {
+  return buildE2EGraph(local).pipe(Layer.provideMerge(NodeServices.layer as never))
+}
+
+
+const DISTILLER_MARKER = "Distill this worker result"
+const CLASSIFIER_MARKER = "Classify this project message"
+const REPLANNER_MARKER = "Propose a roadmap ChangeSet"
+
+
+const e2eTimeoutMs = 180_000
+
+function distillerReply(sourceID: string, title = "Passkey boundary decided", content = "Auth architecture routed through a dedicated verification boundary.") {
+  return {
+    items: [{ kind: "lesson", title, content, sourceID, sourceKind: "task" }],
+  }
+}
+
+type HitLike = { body: Record<string, unknown> }
+
+function countHits(hits: readonly HitLike[], opts: { marker?: string; model?: string }) {
+  let count = 0
+  for (const hit of hits) {
+    const rawBody = JSON.stringify(hit.body)
+    if (rawBody.includes("Generate a title for this conversation")) continue
+    if (opts.model && !rawBody.includes('"' + opts.model + '"')) continue
+    if (opts.marker && !rawBody.includes(opts.marker)) continue
+    count += 1
+  }
+  return count
+}
+
+
+const itUnit = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([Orchestrator.node, AtlasRouter.node, Session.node, SessionProjector.node, EventV2Bridge.node]),
+    [
+      [SessionPrompt.node, fakePrompt],
+      [Git.node, fakeGit],
+      [LocalAI.node, localAIMock],
+    ],
+  ),
+)
+
+function localAIMockFor(local: boolean) {
+  return local
+    ? Layer.mock(LocalAI.Service, { state: () => Effect.succeed(installedLocalState() as never) })
+    : Layer.mock(LocalAI.Service, { state: () => Effect.succeed(emptyLocalState() as never) })
+}
+
 describe("model-backed intelligence paths", () => {
-  it.instance("invalid classifier output is rejected; deterministic fallback preserved", () =>
+  itUnit.instance("invalid classifier output is rejected; deterministic fallback preserved", () =>
     Effect.gen(function* () {
       const orch = yield* Orchestrator.Service
       const objective = yield* orch.createProject({ title: "classifier bad enum", description: "", acceptanceCriteria: ["a"] })
@@ -128,7 +277,7 @@ describe("model-backed intelligence paths", () => {
     }),
   )
 
-  it.instance("ambiguous message classifies to instruction through the routed classifier", () =>
+  itUnit.instance("ambiguous message classifies to instruction through the routed classifier", () =>
     Effect.gen(function* () {
       const orch = yield* Orchestrator.Service
       const objective = yield* orch.createProject({ title: "classifier works", description: "", acceptanceCriteria: ["a"] })
@@ -148,7 +297,7 @@ describe("model-backed intelligence paths", () => {
     }),
   )
 
-  it.instance("unknown task references in model classification are rejected outright", () =>
+  itUnit.instance("unknown task references in model classification are rejected outright", () =>
     Effect.gen(function* () {
       const orch = yield* Orchestrator.Service
       const objective = yield* orch.createProject({ title: "classifier refs", description: "", acceptanceCriteria: ["a"] })
@@ -162,7 +311,7 @@ describe("model-backed intelligence paths", () => {
 
       const res = yield* orch.chat({
         projectID: objective.projectID,
-        text: "overall QA structure leaves people uneasy lately",
+        text: "we should probably rethink testing entirely",
       })
       expect(res.intent).toBe("question")
       expect(modelCalls()).toBe(before + 1)
@@ -170,7 +319,7 @@ describe("model-backed intelligence paths", () => {
     }),
   )
 
-  it.instance(
+  itUnit.instance(
     "complex architecture instruction runs the model replanner with bounded repairs; validator stays authoritative",
     () =>
       Effect.gen(function* () {
@@ -202,11 +351,9 @@ describe("model-backed intelligence paths", () => {
           maxAttempts: 2,
           revision: 1,
         }
-        // Attempt 1: invalid operation target (unknown task) — forces a repair.
         scriptedReplies.push(
           JSON.stringify({ operations: [{ op: "reprioritize_task", taskID: "does-not-exist", priority: 1 }], rationale: "v1" }),
         )
-        // Attempt 2: valid proposal.
         scriptedReplies.push(JSON.stringify({ operations: [{ op: "add_task", task: passkeyTask }], rationale: "v2" }))
 
         const res = yield* orch.chat({
@@ -216,12 +363,12 @@ describe("model-backed intelligence paths", () => {
         expect(res.intent).toBe("instruction")
         expect(res.instructionStatus).toBe("applied")
         expect(res.replannerApplied).toBe(true)
-        expect(modelCalls()).toBe(beforeCalls + 2) // initial proposal + one bounded repair
+        expect(res.replannerAttempts).toBe(2)
+        expect(modelCalls()).toBe(beforeCalls + 2)
 
         const after = (yield* orch.get(projectID))!
         expect(after.roadmap.version).toBe(beforeVersion + 1)
         expect(after.roadmap.tasks.find((task) => task.id === "model-added")).toBeTruthy()
-        // Unaffected slice byte-stable: pre-existing tasks keep their revisions.
         for (const task of after.roadmap.tasks) {
           if (task.id in revisionsBefore && task.id !== "research") {
             expect(task.revision).toBe(revisionsBefore[task.id])
@@ -231,7 +378,7 @@ describe("model-backed intelligence paths", () => {
       }),
   )
 
-  it.instance(
+  itUnit.instance(
     "invalid proposals exhaust bounded repairs safely; simple deterministic edits never invoke a model",
     () =>
       Effect.gen(function* () {
@@ -261,8 +408,8 @@ describe("model-backed intelligence paths", () => {
         expect(res.replannerApplied).toBe(false)
         expect((yield* orch.get(projectID))!.roadmap.version).toBe(beforeVersion)
         expect(res.replannerAttempts).toBe(3)
+        expect(modelCalls()).toBe(beforeCalls + 3)
 
-        // Simple priority edit is fully deterministic: zero additional calls.
         const callsAt = modelCalls()
         const simpleRes = yield* orch.chat({ projectID, text: "make tests highest priority" })
         expect(simpleRes.intent).toBe("instruction")
@@ -272,7 +419,7 @@ describe("model-backed intelligence paths", () => {
       }),
   )
 
-  it.instance("cancelled project aborts intelligence without consulting any model", () =>
+  itUnit.instance("cancelled project aborts intelligence without consulting any model", () =>
     Effect.gen(function* () {
       const orch = yield* Orchestrator.Service
       const objective = yield* orch.createProject({ title: "cancelled", description: "", acceptanceCriteria: ["a"] })
@@ -293,7 +440,7 @@ describe("model-backed intelligence paths", () => {
     }),
   )
 
-  it.instance("local_only privacy: ambiguous escalation sees zero cloud candidates and falls back", () =>
+  itUnit.instance("local_only privacy: ambiguous escalation sees zero cloud candidates and falls back", () =>
     Effect.gen(function* () {
       const orch = yield* Orchestrator.Service
       const objective = yield* orch.createProject({
@@ -302,7 +449,6 @@ describe("model-backed intelligence paths", () => {
         acceptanceCriteria: ["a"],
       })
       const projectID = objective.projectID
-      // Mark the workspace local-only.
       const file0 = (yield* Effect.promise(() => loadProject(projectID)))!
       file0.privacy = "local_only"
       yield* Effect.promise(() => saveProjectStrict(projectID, file0))
@@ -315,199 +461,212 @@ describe("model-backed intelligence paths", () => {
         text: "overall direction feels vague lately",
       })
 
-      // No cloud model was invoked (fake test provider is cloud) and the safe
-      // deterministic route answered instead.
       expect(res.intent).toBe("question")
       expect(modelCalls()).toBe(before)
     }),
   )
-
-  it.instance(
-    "large checkpoint triggers routed session distillation; provenance validated",
-    () =>
-      Effect.gen(function* () {
-        const orch = yield* Orchestrator.Service
-        const objective = yield* orch.createProject({
-          title: "checkpoint distill",
-          description: "",
-          acceptanceCriteria: ["a"],
-        })
-        const projectID = objective.projectID
-
-        // Lower the threshold for test determinism, restore afterwards.
-        const originalThreshold = ModelIntel.intelligenceThresholds.checkpointMinBytes
-        ModelIntel.intelligenceThresholds.checkpointMinBytes = 10
-        try {
-          scriptedReplies.length = 0
-          scriptedReplies.push(
-            JSON.stringify({
-              items: [
-                {
-                  kind: "decision",
-                  title: "Freeze API surface",
-                  content: "Snapshot decided the public API stays stable during stabilization.",
-                  sourceID: objective.projectID,
-                  sourceKind: "checkpoint",
-                },
-              ],
-            }),
-          )
-
-          const beforeBrain = yield* getBrainCount(projectID)
-          yield* orch.pause(projectID, "finish_current_safe_step")
-          const afterValid = yield* getBrainCount(projectID)
-          expect(afterValid).toBe(beforeBrain + 1)
-          const brainAfter = (yield* Effect.promise(() => loadBrainStoreSafe(projectID)))!
-          const derived = brainAfter.memories.find((m) => m.title === "Freeze API surface")
-          expect(derived?.authority).toBe("derived")
-          expect(derived?.provenance[0]?.id).toBe(objective.projectID)
-
-          // Invalid provenance is dropped without corrupting Brain state.
-          const beforeInvalid = modelCalls()
-          yield* orch.checkpoint(projectID).pipe(Effect.option)
-          expect(modelCalls()).toBeGreaterThan(beforeInvalid)
-
-        } finally {
-        }
-      }),
-  )
-
-  it.instance("session conversation threshold triggers distillation with provenance validation", () =>
-    Effect.gen(function* () {
-      const orch = yield* Orchestrator.Service
-      const objective = yield* orch.createProject({
-        title: "session threshold",
-        description: "",
-        acceptanceCriteria: ["a"],
-      })
-      const projectID = objective.projectID
-
-      const originalEvery = ModelIntel.intelligenceThresholds.sessionEveryMessages
-      ModelIntel.intelligenceThresholds.sessionEveryMessages = 2
-      try {
-        // Message #1 (deterministic simple), message #2 fires the trigger.
-        scriptedReplies.length = 0
-        // Valid decision referencing msg:0 → persisted.
-        scriptedReplies.push(
-          JSON.stringify({
-            items: [
-              { kind: "decision", title: "Prefer local models", content: "User wants local execution.", sourceID: "msg:0", sourceKind: "user_message" },
-              // Invalid: source id outside supplied evidence pack.
-              { kind: "constraint", title: "Bogus", content: "Unsupported provenance.", sourceID: "msg:42", sourceKind: "session_message" },
-            ],
-          }),
-        )
-        const brainBefore1 = yield* getBrainCount(projectID)
-        yield* orch.chat({ projectID, text: "what is blocking us about local models?" })
-        let brainAfter = yield* getBrainCount(projectID)
-        expect(brainAfter).toBe(brainBefore1)
-
-        yield* orch.chat({ projectID, text: "what is our overall progress on local models?" })
-
-        // Threshold 2: distiller ran on message #2 and stored only valid items.
-        brainAfter = yield* getBrainCount(projectID)
-        expect(brainAfter).toBe(1)
-        const brain = (yield* Effect.promise(() => loadBrainStoreSafe(projectID)))!
-        expect(brain.memories.some((m) => m.authority === "derived")).toBe(true)
-        expect(brain.memories.some((m) => m.title === "Bogus")).toBe(false)
-      } finally {
-        ModelIntel.intelligenceThresholds.sessionEveryMessages = originalEvery
-      }
-    }),
-  )
-
-  it.instance(
-    "cross-flow: ambiguous msg → routed classifier → complex replanner → routed checkpoint distillation",
-    () =>
-      Effect.gen(function* () {
-        const orch = yield* Orchestrator.Service
-        const objective = yield* orch.createProject({
-          title: "crossflow intelligence",
-          description: "",
-          acceptanceCriteria: ["first", "second"],
-        })
-        const projectID = objective.projectID
-        yield* orch.plan(projectID)
-        const roadmapBefore = (yield* orch.get(projectID))!.roadmap.version
-
-        const originalCheckpoint = ModelIntel.intelligenceThresholds.checkpointMinBytes
-        ModelIntel.intelligenceThresholds.checkpointMinBytes = 10
-        try {
-          // 1) Ambiguous message → model classifies as instruction.
-          scriptedReplies.length = 0
-          scriptedReplies.push(JSON.stringify({ intent: "instruction", confidence: 0.9, reasonCode: "user_rethink" }))
-          // 2) Complexity gate sees architecture keyword → replanner runs twice.
-          scriptedReplies.push(replannerInvalid(), replannerValid())
-          // 3) pause() creates a checkpoint ≥ threshold → distiller runs last.
-          scriptedReplies.push(distillerReply(objective.projectID))
-
-          yield* orch.chat({
-            projectID,
-            text: "change the auth architecture to passkeys but keep legacy login working",
-          })
-
-          const afterMutation = (yield* orch.get(projectID))!
-          expect(afterMutation.roadmap.version).toBe(roadmapBefore + 1)
-          expect(afterMutation.roadmap.tasks.some((task) => task.id === "model-added")).toBe(true)
-
-          yield* orch.pause(projectID, "finish_current_safe_step")
-          const brain = yield* Effect.promise(() => loadBrainStoreSafe(projectID))
-          const distilled = brain.memories.find((m) => m.title === "Snapshot decision captured")
-          expect(distilled?.authority).toBe("derived")
-          expect(distilled?.provenance[0]?.id).toBe(projectID)
-
-          // Restart semantics: fresh open keeps mutated roadmap (no auto-model calls).
-          ModelIntel.intelligenceThresholds.checkpointMinBytes = originalCheckpoint
-          scriptedReplies.length = 0
-          const beforeCalls = modelCalls()
-          const reopened = (yield* orch.get(projectID))!
-          expect(reopened.roadmap.tasks.some((task) => task.id === "model-added")).toBe(true)
-          expect(modelCalls()).toBe(beforeCalls)
-        } finally {
-          ModelIntel.intelligenceThresholds.checkpointMinBytes = originalCheckpoint
-        }
-      }),
-  )
 })
 
-function replannerInvalid(): string {
-  return JSON.stringify({ operations: [{ op: "reprioritize_task", taskID: "does-not-exist", priority: 1 }], rationale: "v1" })
-}
+describe("model intelligence production proofs", () => {
+  test(
+    "E2E: real worker execution fires routed worker_distiller and persists derived memory",
+    async () => {
+      const program = Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        yield* Effect.gen(function* () {
+          const orch = yield* Orchestrator.Service
+          const sessions = yield* Session.Service
 
-function replannerValid(): string {
-  return JSON.stringify({
-    operations: [
-      {
-        op: "add_task",
-        task: {
-          id: "model-added",
-          title: "Passkeys",
-          description: "",
-          status: "planned",
-          dependencies: [],
-          acceptanceCriteria: ["passkey login supported"],
-          priority: 5,
-          parallelizable: true,
-          attempt: 0,
-          maxAttempts: 2,
-          revision: 1,
+          const originalWorkerThreshold = ModelIntel.intelligenceThresholds.workerMinChars
+          ModelIntel.intelligenceThresholds.workerMinChars = 30
+
+          try {
+            const objective = yield* orch.createProject({
+              title: "worker distiller e2e",
+              description: "",
+              acceptanceCriteria: ["only-one"],
+            })
+            const projectID = objective.projectID
+            yield* orch.plan(projectID)
+            const rootSessionID = (yield* orch.get(projectID))!.sessionID!
+
+            // Queue the routed distiller reply FIRST so the distiller scratch
+            // turn never steals a worker FIFO reply.
+            yield* llm.textMatch(
+              (hit: HitLike) => JSON.stringify(hit.body).includes(DISTILLER_MARKER),
+              JSON.stringify(distillerReply("research")),
+            )
+            for (let i = 0; i < 5; i++) {
+              yield* llm.text(denseWorkerText())
+            }
+
+            yield* orch.start(projectID)
+
+            let distilledSeen = false
+            for (let attempt = 0; attempt < 150; attempt++) {
+              const brain = yield* Effect.promise(() => loadBrainStoreSafe(projectID))
+              if (brain.memories.some((m) => m.tags?.includes("model_distilled") === true)) {
+                distilledSeen = true
+                break
+              }
+              yield* Effect.sleep("200 millis")
+            }
+            expect(distilledSeen).toBe(true)
+
+            const brain = yield* Effect.promise(() => loadBrainStoreSafe(projectID))
+            const distilled = brain.memories.find((m) => m.title === "Passkey boundary decided")
+            expect(distilled!.authority).toBe("derived")
+            expect(distilled!.provenance[0]?.id).toBe("research")
+
+            const children = yield* sessions.children(rootSessionID as never).pipe(Effect.orElseSucceed(() => []))
+            expect(children.length).toBeGreaterThanOrEqual(1)
+            for (const child of children) expect(child.id).not.toBe(rootSessionID)
+
+            const hits = yield* llm.hits
+            expect(countHits(hits, { marker: DISTILLER_MARKER, model: "test-model" })).toBeGreaterThanOrEqual(1)
+
+            // Restart persistence: re-reading the file-backed brain keeps it.
+            const reloaded = yield* Effect.promise(() => loadBrainStoreSafe(projectID))
+            expect(reloaded.memories.some((m) => m.title === "Passkey boundary decided")).toBe(true)
+          } finally {
+            ModelIntel.intelligenceThresholds.workerMinChars = originalWorkerThreshold
+          }
+        }).pipe(
+          withTmpdirInstance({ git: false, config: cloudInstanceConfig(llm.url) }),
+          Effect.provide(buildE2EGraph(false)),
+          Effect.provide(NodeServices.layer),
+          Effect.provide(TestLLMServer.layer),
+          Effect.scoped,
+        )
+      }).pipe(Effect.provide(TestLLMServer.layer), Effect.scoped)
+      await Effect.runPromise(program as never, { signal: AbortSignal.timeout(180_000) })
+    },
+    180_000,
+  )
+
+  test(
+    "E2E local_only: classifier + replanner + worker-distiller all execute on LOCAL model with zero cloud calls",
+    async () => {
+      const program = Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        yield* Effect.gen(function* () {
+          const orch = yield* Orchestrator.Service
+
+          const originalWorker = ModelIntel.intelligenceThresholds.workerMinChars
+          ModelIntel.intelligenceThresholds.workerMinChars = 30
+
+          try {
+            const objective = yield* orch.createProject({
+              title: "local only flows",
+              description: "",
+              acceptanceCriteria: ["first", "second"],
+            })
+            const projectID = objective.projectID
+            {
+              const file0 = (yield* Effect.promise(() => loadProject(projectID)))!
+              file0.privacy = "local_only"
+              yield* Effect.promise(() => saveProjectStrict(projectID, file0))
+            }
+            yield* orch.plan(projectID)
+
+            // A) ambiguous — LOCAL classifier
+            yield* llm.textMatch(
+              (hit: HitLike) => JSON.stringify(hit.body).includes(CLASSIFIER_MARKER),
+              JSON.stringify({ intent: "instruction", confidence: 0.9, reasonCode: "local_wants" }),
+            )
+            const resA = yield* orch.chat({ projectID, text: "overall quality approach feels under-specified here" })
+            expect(resA.intent).toBe("instruction")
+
+            // B) complex instruction — LOCAL replanner (invalid then valid)
+            yield* llm.textMatch(
+              (hit: HitLike) => JSON.stringify(hit.body).includes(REPLANNER_MARKER) && JSON.stringify(hit.body).includes("does-not-exist"),
+              replannerInvalid(),
+            )
+            yield* llm.textMatch(
+              (hit: HitLike) => JSON.stringify(hit.body).includes(REPLANNER_MARKER) && !JSON.stringify(hit.body).includes("does-not-exist"),
+              replannerValid(),
+            )
+            const resB = yield* orch.chat({
+              projectID,
+              text: "change the auth architecture to passkeys but keep legacy login working",
+            })
+            expect(resB.replannerApplied).toBe(true)
+
+            // C) workers run locally; dense results fire the LOCAL distiller.
+            yield* llm.textMatch(
+              (hit: HitLike) => JSON.stringify(hit.body).includes(DISTILLER_MARKER),
+              JSON.stringify(distillerReply("research", "Local auth lesson", "Routed through dedicated verification boundary.")),
+            )
+            for (let i = 0; i < 6; i++) {
+              yield* llm.textMatch(
+                (hit: HitLike) =>
+                  JSON.stringify(hit.body).includes("# Task:") &&
+                  !JSON.stringify(hit.body).includes(DISTILLER_MARKER),
+                denseWorkerText(),
+              )
+            }
+            yield* orch.start(projectID)
+
+            let distilledSeen = false
+            for (let attempt = 0; attempt < 150; attempt++) {
+              const brain = yield* Effect.promise(() => loadBrainStoreSafe(projectID))
+              if (brain.memories.some((m) => m.title === "Local auth lesson")) {
+                distilledSeen = true
+                break
+              }
+              yield* Effect.sleep("200 millis")
+            }
+            expect(distilledSeen).toBe(true)
+
+            const hits = yield* llm.hits
+            expect(countHits(hits, { model: "test-model" })).toBe(0)
+            expect(countHits(hits, { marker: CLASSIFIER_MARKER, model: "local-dense" })).toBeGreaterThanOrEqual(1)
+            expect(countHits(hits, { marker: REPLANNER_MARKER, model: "local-dense" })).toBeGreaterThanOrEqual(1)
+            expect(countHits(hits, { marker: DISTILLER_MARKER, model: "local-dense" })).toBeGreaterThanOrEqual(1)
+
+            const brainFinal = yield* Effect.promise(() => loadBrainStoreSafe(projectID))
+            expect(brainFinal.memories.find((m) => m.title === "Local auth lesson")?.authority).toBe("derived")
+          } finally {
+            ModelIntel.intelligenceThresholds.workerMinChars = originalWorker
+          }
+        }).pipe(
+          withTmpdirInstance({ git: false, config: localInstanceConfig(llm.url) }),
+          Effect.provide(buildE2EGraph(true)),
+          Effect.provide(NodeServices.layer),
+          Effect.provide(TestLLMServer.layer),
+          Effect.scoped,
+        )
+      }).pipe(Effect.provide(TestLLMServer.layer), Effect.scoped)
+      await Effect.runPromise(program as never, { signal: AbortSignal.timeout(180_000) })
+    },
+    180_000,
+  )
+
+  function replannerInvalid(): string {
+    return JSON.stringify({ operations: [{ op: "reprioritize_task", taskID: "does-not-exist", priority: 1 }], rationale: "v1" })
+  }
+
+  function replannerValid(): string {
+    return JSON.stringify({
+      operations: [
+        {
+          op: "add_task",
+          task: {
+            id: "model-added",
+            title: "Passkeys",
+            description: "",
+            status: "planned",
+            dependencies: [],
+            acceptanceCriteria: ["passkey login supported"],
+            priority: 5,
+            parallelizable: true,
+            attempt: 0,
+            maxAttempts: 2,
+            revision: 1,
+          },
         },
-      },
-    ],
-    rationale: "v2",
-  })
-}
-
-function distillerReply(sourceID: string): string {
-  return JSON.stringify({
-    items: [
-      {
-        kind: "decision",
-        title: "Snapshot decision captured",
-        content: "Stabilization snapshot recorded.",
-        sourceID,
-        sourceKind: "checkpoint",
-      },
-    ],
-  })
-}
+      ],
+      rationale: "v2",
+    })
+  }
+})

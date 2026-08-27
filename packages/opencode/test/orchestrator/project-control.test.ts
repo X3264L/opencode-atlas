@@ -8,6 +8,8 @@ import { Git, type Stat, type Item } from "@/git"
 import { Orchestrator } from "@/orchestrator/index"
 import { loadProject, saveProject } from "@/orchestrator/store"
 import { saveControlState } from "@/orchestrator/control"
+import { LocalAI } from "@/localai/localai"
+import { Provider } from "@/provider/provider"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Supervisor } from "@/supervisor/index"
 import { saveBrain } from "@/brain/store"
@@ -70,7 +72,7 @@ const promptLayer = Layer.mock(SessionPrompt.Service, {
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Orchestrator.node, Supervisor.node, EventV2Bridge.node]),
+    LayerNode.group([Orchestrator.node, Supervisor.node, EventV2Bridge.node, LocalAI.node, Provider.node]),
     [
       [Session.node, sessionLayer],
       [SessionPrompt.node, promptLayer],

@@ -140,6 +140,7 @@ export const MODEL_REPLANNER_MAX_REPAIRS = 2
 // Per-project admission lock: concurrent opens of the same legacy project
 // must never race two root sessions into existence.
 const rootSessionLock = KeyedMutex.makeUnsafe<string>()
+const brainWriteLock = KeyedMutex.makeUnsafe<string>()
 
 function publish(
   bridge: typeof EventV2Bridge.Service.Service,
@@ -160,10 +161,10 @@ export const intelligenceThresholds = {
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const bridge = yield* EventV2Bridge.Service
     const sessions = yield* Session.Service
     const promptService = yield* SessionPrompt.Service
     const git = yield* Git.Service
+    const bridge = yield* EventV2Bridge.Service
     const supervisor = yield* Supervisor.Service
     const router = yield* AtlasRouter.Service
 
@@ -693,7 +694,19 @@ export const layer = Layer.effect(
                       ),
                     )
                   : []
-                const lastText = [...response.parts].reverse().find((part) => part.type === "text")
+                // The worker's authoritative output is the session transcript,
+                // not the prompt call's return value.
+                let transcript: { parts: { type: string; text?: string }[] }[] = []
+                try {
+                  transcript = await Effect.runPromise(
+                    detached(sessions.messages({ sessionID: child.id })),
+                  )
+                } catch {}
+                const lastAssistantText = [...transcript]
+                  .reverse()
+                  .flatMap((entry) => entry.parts)
+                  .find((part) => part.type === "text" && (part as unknown as { text?: string }).text)
+                const lastText = lastAssistantText
                 const workerResult = {
                   taskID: task.id,
                   status: "completed" as const,
@@ -714,10 +727,11 @@ export const layer = Layer.effect(
                 })
                 if (distilled.length > 0) {
                   file.artifacts.push(...workerResult.artifacts)
-                  const brain = await loadBrainStore(projectID)
-                  brain.memories.push(...distilled)
-                  await saveBrainStore(projectID, brain)
-                  await saveProject(projectID, file)
+                  await brainWriteLock.withLock(projectID)(Effect.gen(function* () {
+                    const brain = yield* Effect.promise(() => loadBrainStore(projectID))
+                    brain.memories.push(...distilled)
+                    yield* Effect.promise(() => saveBrainStore(projectID, brain))
+                  }))
                 }
                 // Model-backed distillation only when the deterministic pass is
                 // insufficient (dense prose). Failure here keeps deterministic memories.
@@ -741,7 +755,8 @@ export const layer = Layer.effect(
                         }),
                       ),
                     )
-                  } catch {}
+                  } catch (e) {
+                  }
                 }
                 return workerResult
               },
@@ -917,10 +932,13 @@ export const layer = Layer.effect(
         estimatedInputTokens: estimateTokensFor(input.summary),
         ...(privacyOf(input.file) !== "standard" ? { privacy: privacyOf(input.file) } : {}),
       })
-      const result = yield* distillEffect.pipe(Effect.option)
-      if (result._tag === "None") return 0 // deterministic extraction remains
+      const result = yield* Effect.exit(distillEffect)
+      if (result._tag === "Failure") {
+        const cause0 = (result.cause as { failures?: { error?: unknown }[] }).failures?.[0]
+        return 0
+      }
       const memories = toDerivedMemories(result.value.items, { projectID: input.projectID })
-      return yield* persistDistilledMemories(input.projectID, memories)
+      return yield* brainWriteLock.withLock(input.projectID)(persistDistilledMemories(input.projectID, memories))
     })
 
     /** Root-conversation session distillation when the conversation grows past
@@ -953,7 +971,7 @@ export const layer = Layer.effect(
         return 0 // deterministic fallback; nothing partial written
       }
       const memories = toDerivedMemories(result.value.items, { projectID: input.projectID })
-      return yield* persistDistilledMemories(input.projectID, memories)
+      return yield* brainWriteLock.withLock(input.projectID)(persistDistilledMemories(input.projectID, memories))
     })
 
     const chat = Effect.fn("Orchestrator.chat")(function* (input: { projectID: string; text: string }) {
@@ -1287,4 +1305,3 @@ export const node = LayerNode.make({
 })
 
 export * as Orchestrator from "."
-
