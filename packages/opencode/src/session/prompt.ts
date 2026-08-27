@@ -64,6 +64,7 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
+import { hasInterruptionBarrier } from "./interruption-barrier"
 import { LLMEvent } from "@opencode-ai/llm"
 
 // @ts-ignore
@@ -1191,6 +1192,10 @@ const layer = Layer.effect(
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
+          if (hasInterruptionBarrier(sessionID)) {
+            yield* Effect.logInfo("interruption barrier: stopping model loop", { "session.id": sessionID })
+            break
+          }
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 

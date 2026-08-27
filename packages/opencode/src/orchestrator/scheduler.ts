@@ -124,6 +124,12 @@ export async function scheduleRoadmap(input: {
             cancelledCount += 1
             return
           }
+          // Interrupted workers (stale after replacement) are re-queued for a
+          // replacement worker without counting as a failure attempt.
+          if (result.status === "cancelled" && result.blockers?.includes("stale_worker_result")) {
+            setState(task, "planned")
+            return
+          }
           if (result.status !== "completed") {
             throw new Error(result.blockers?.join("; ") ?? result.summary ?? "worker did not complete")
           }

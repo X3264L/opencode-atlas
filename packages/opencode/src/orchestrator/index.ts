@@ -41,6 +41,7 @@ import {
 } from "./store"
 import { classifyInstruction, detectSupersession, type ProjectInstruction } from "./instructions"
 import type { ProjectIdea } from "./ideas"
+import { InstructionEvent } from "@opencode-ai/schema/instruction-event"
 import { distillWorkerCompletion, compactMemories } from "./distill"
 import { routeProjectMessage } from "./project-message"
 import type { ProjectMemory } from "../brain/types"
@@ -52,6 +53,7 @@ import { createDiffstatWatcher } from "./diffstat-watcher"
 import { workingTreeStats } from "./working-tree"
 import { loadBrain as loadBrainStore, saveBrain as saveBrainStore } from "../brain/store"
 import { MessageID, PartID } from "@/session/schema"
+import { addInterruptionBarrier, removeInterruptionBarrier } from "@/session/interruption-barrier"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { AtlasRouter } from "@/router/index"
 import {
@@ -68,6 +70,8 @@ import {
   type RoutedDeps,
 } from "./model-intelligence"
 import { analyzeImpact } from "./impact"
+import { WorkerInterruptionCoordinator, type InterruptCause, type WorkerInterruption } from "./interruption"
+import { createHandoff, handoffToPromptText } from "./handoff"
 import {
   loadControlState,
   saveControlState,
@@ -124,6 +128,7 @@ export interface Interface {
   readonly latestCheckpoint: (projectID: string) => Effect.Effect<ProjectCheckpoint | undefined>
   readonly getControlState: (projectID: string) => Effect.Effect<ProjectControlState>
   readonly pause: (projectID: string, mode?: PauseMode, reason?: string) => Effect.Effect<ProjectControlState, Error>
+  readonly interruptWorker: (projectID: string, taskID: string, cause: InterruptCause) => Effect.Effect<string | null, Error>
   readonly resume: (projectID: string) => Effect.Effect<ProjectControlState, Error>
 }
 
@@ -169,6 +174,40 @@ export const layer = Layer.effect(
     const router = yield* AtlasRouter.Service
 
     const routedDeps: RoutedDeps = { router, sessions, promptService }
+
+    const interruptionCoordinator = new WorkerInterruptionCoordinator((event) => {
+      // Publish interruption lifecycle events through the existing bridge
+      if (event.type === "atlas.worker.interruption.requested") {
+        publish(bridge, InstructionEvent.WorkerInterruptionRequested, {
+          projectID: event.projectID,
+          taskID: event.taskID,
+        })
+      } else if (event.type === "atlas.worker.interrupted") {
+        publish(bridge, InstructionEvent.WorkerInterrupted, {
+          projectID: event.projectID,
+          taskID: event.taskID,
+        })
+      }
+    })
+
+    // Wire real tool lifecycle: subscribe to session part updates via the bridge.
+    // Tool part status changes indicate tool start/settle for worker-owned sessions.
+    yield* bridge.listen((event) => {
+      const payload = event.data as Record<string, unknown>
+      if (payload?.type !== "tool") return Effect.void
+      const sessionID = String((payload as Record<string, unknown>).sessionID ?? "")
+      if (!sessionID) return Effect.void
+      const reg = interruptionCoordinator.getWorkerBySession(sessionID)
+      if (!reg) return Effect.void
+      const state = (payload as { state?: { status?: string } }).state
+      const callID = String((payload as Record<string, unknown>).callID ?? "")
+      if (state?.status === "pending") {
+        interruptionCoordinator.trackToolStart(reg.workerID, callID, String((payload as Record<string, unknown>).tool ?? "unknown"))
+      } else if (state?.status === "done" || state?.status === "error") {
+        interruptionCoordinator.trackToolSettled(reg.workerID, callID)
+      }
+      return Effect.void
+    })
 
     function ensureDiffstatWatcher(projectID: string, workspace: string) {
       if (diffstatWatchers.has(projectID)) return
@@ -678,6 +717,8 @@ export const layer = Layer.effect(
                     }),
                   ),
                 )
+                if (process.env.DEBUG_INTEL === "1") console.error("DBG reg", task.id, child.id)
+                interruptionCoordinator.register(projectID, child.id, child.id, task.id, task.revision)
                 const response = await Effect.runPromise(
                   detached(
                     promptService.prompt({
@@ -727,11 +768,9 @@ export const layer = Layer.effect(
                 })
                 if (distilled.length > 0) {
                   file.artifacts.push(...workerResult.artifacts)
-                  await brainWriteLock.withLock(projectID)(Effect.gen(function* () {
-                    const brain = yield* Effect.promise(() => loadBrainStore(projectID))
-                    brain.memories.push(...distilled)
-                    yield* Effect.promise(() => saveBrainStore(projectID, brain))
-                  }))
+                  const brain = await loadBrainStore(projectID)
+                  brain.memories.push(...distilled)
+                  await saveBrainStore(projectID, brain)
                 }
                 // Model-backed distillation only when the deterministic pass is
                 // insufficient (dense prose). Failure here keeps deterministic memories.
@@ -756,6 +795,24 @@ export const layer = Layer.effect(
                       ),
                     )
                   } catch (e) {
+                  }
+                }
+                // Fence check: reject stale worker results after replacement.
+                if (interruptionCoordinator.isStale(task.id, child.id)) {
+                  publish(bridge, InstructionEvent.WorkerResultStale, {
+                    projectID,
+                    taskID: task.id,
+                    contractRoadmapVersion: task.revision,
+                    currentRoadmapVersion: file.roadmap.version,
+                  })
+                  return {
+                    taskID: task.id,
+                    status: "cancelled" as const,
+                    summary: "stale worker result rejected",
+                    artifacts: [],
+                    startedAt: Date.now(),
+                    finishedAt: Date.now(),
+                    blockers: ["stale_worker_result"],
                   }
                 }
                 return workerResult
@@ -786,6 +843,20 @@ export const layer = Layer.effect(
       })()
 
       return { started: true }
+    })
+
+    const interruptWorker = Effect.fn("Orchestrator.interruptWorker")(function* (targetProjectID: string, targetTaskID: string, cause: InterruptCause) {
+      const reg = interruptionCoordinator.getWorkerByTask(targetTaskID)
+      if (!reg || reg.projectID !== targetProjectID) return null
+      const id = interruptionCoordinator.interrupt(targetProjectID, reg.workerID, cause)
+      if (id) addInterruptionBarrier(reg.sessionID)
+
+      // If the safety class allows immediate cancellation, cancel the worker's prompt turn.
+      const interruption = interruptionCoordinator.getInterruption(id!)
+      if (interruption?.status === "cancelling") {
+        yield* promptService.cancel(reg.sessionID as never).pipe(Effect.catch(() => Effect.void))
+      }
+      return id
     })
 
     // ---- Model-backed intelligence closures ----
@@ -878,6 +949,12 @@ export const layer = Layer.effect(
         file.objective = applied.objective
         file.changesets = [...(file.changesets ?? []), { ...changeset, status: "applied" as const }]
         yield* Effect.promise(() => writeProjectStrict(projectID, file))
+
+        // Interrupt active workers whose tasks were invalidated by the mutation.
+        for (const taskID of impact.interruptTaskIDs) {
+          yield* interruptWorker(projectID, taskID, "roadmap_mutation").pipe(Effect.catch(() => Effect.void))
+        }
+
         return { ok: true, attempts: attempt + 1 }
       }
       // Failure policy: no roadmap mutation; instruction remains failed.
@@ -1284,6 +1361,9 @@ export const layer = Layer.effect(
       const running: ProjectControlState = { status: "running" }
       yield* Effect.promise(() => saveControlState(projectID, running))
       yield* supervisor.setPaused(projectID, false).pipe(Effect.catch(() => Effect.void))
+      for (const worker of interruptionCoordinator.getWorkersByProject(projectID)) {
+        removeInterruptionBarrier(worker.sessionID)
+      }
       publish(bridge, Resumed, { projectID, timestamp: Date.now() })
 
       // Resume scheduler admission for a roadmap that was mid-execution when
@@ -1294,7 +1374,7 @@ export const layer = Layer.effect(
       return running
     })
 
-    return Service.of({ createProject, get, list, plan, start, cancel, chat, compactBrain, workingTreeSummary, workingTreeFiles, checkpoint, listCheckpoints: listCheckpointsFn, getCheckpoint, latestCheckpoint: latestCheckpointFn, getControlState, pause, resume })
+    return Service.of({ createProject, get, list, plan, start, cancel, chat, compactBrain, workingTreeSummary, workingTreeFiles, checkpoint, listCheckpoints: listCheckpointsFn, getCheckpoint, latestCheckpoint: latestCheckpointFn, getControlState, pause, resume, interruptWorker })
   }),
 )
 
@@ -1305,3 +1385,4 @@ export const node = LayerNode.make({
 })
 
 export * as Orchestrator from "."
+export type { InterruptCause } from "./interruption"

@@ -10,6 +10,8 @@ import { loadProject, saveProject } from "@/orchestrator/store"
 import { saveControlState } from "@/orchestrator/control"
 import { LocalAI } from "@/localai/localai"
 import { Provider } from "@/provider/provider"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { AtlasRouter } from "@/router/index"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Supervisor } from "@/supervisor/index"
 import { saveBrain } from "@/brain/store"
@@ -72,11 +74,34 @@ const promptLayer = Layer.mock(SessionPrompt.Service, {
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Orchestrator.node, Supervisor.node, EventV2Bridge.node, LocalAI.node, Provider.node]),
+    LayerNode.group([Orchestrator.node, Supervisor.node, AtlasRouter.node, Session.node, SessionProjector.node, EventV2Bridge.node]),
     [
       [Session.node, sessionLayer],
       [SessionPrompt.node, promptLayer],
       [Git.node, fakeGit],
+      [LocalAI.node, Layer.mock(LocalAI.Service, {
+        state: () => Effect.succeed({
+          hardware: { os: { platform: "test", arch: "test" }, cpu: {}, memory: { totalBytes: 8 }, gpus: [] },
+          runtimes: [], installed: {}, recommendations: [], benchmarks: {}, readiness: {},
+          preference: "auto" as const, normalized: [],
+        } as never),
+      })],
+      [Provider.node, Layer.mock(Provider.Service, {
+        list: () => Effect.succeed({
+          test: {
+            key: "test-key",
+            models: {
+              "test-model": {
+                id: "test-model", name: "Test Model", release_date: "2025-01-01",
+                attachment: false, reasoning: false, temperature: false, tool_call: true,
+                cost: { input: 0.15, output: 0.6 }, limit: { context: 100_000, output: 8_192 },
+              },
+            },
+          },
+        } as never),
+        getModel: () => Effect.succeed({ id: "test-model", providerID: "test", name: "Test Model" } as never),
+        defaultModel: () => Effect.succeed({ providerID: "test" as never, modelID: "test-model" as never }),
+      })],
     ],
   ),
 )
