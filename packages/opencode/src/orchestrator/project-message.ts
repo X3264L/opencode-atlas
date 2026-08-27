@@ -20,24 +20,29 @@ export interface ProjectMessageResult {
   /** For ideas: captured in idea ledger */
   ideaText?: string
   reason: string
+  /** True when the deterministic classifier had no confident signal */
+  ambiguous?: boolean
 }
 
 export function routeProjectMessage(text: string): ProjectMessageResult {
-  const route: ProjectMessageRoute = classifyProjectMessage(text)
+  const route = classifyProjectMessage(text)
+  const base = {
+    intent: route.intent,
+    reason: route.reason,
+    ...(route.ambiguous ? { ambiguous: true } : {}),
+  }
   switch (route.intent) {
     case "instruction":
-      return { intent: route.intent, instructionText: text, reason: route.reason }
+      return { ...base, instructionText: text }
     case "question":
-      return { intent: route.intent, queryText: text, reason: route.reason }
     case "status_request":
-      return { intent: route.intent, queryText: text, reason: route.reason }
+      return { ...base, queryText: text }
     case "idea":
-      return { intent: route.intent, ideaText: text, reason: route.reason }
+      return { ...base, ideaText: text }
     case "memory_correction":
-      return { intent: route.intent, instructionText: text, reason: route.reason }
     case "direct_project_command":
-      return { intent: route.intent, instructionText: text, reason: route.reason }
+      return { ...base, instructionText: text }
     default:
-      return { intent: route.intent, queryText: text, reason: route.reason }
+      return { ...base, queryText: text }
   }
 }

@@ -1,9 +1,10 @@
 import path from "path"
 import Bun from "bun"
 import { Global } from "@opencode-ai/core/global"
-import type { Checkpoint, ProjectObjective, Roadmap, WorkerArtifact } from "./types"
+import type { Checkpoint, ProjectObjective, Roadmap, WorkerArtifact, PrivacyPolicy } from "./types"
 import type { ProjectInstruction } from "./instructions"
 import type { ProjectIdea } from "./ideas"
+import type { RoadmapChangeSet } from "./changeset"
 
 // File-backed project persistence under the Atlas state dir. Declarative
 // state only; survives restart and is inspectable afterwards.
@@ -21,6 +22,10 @@ export interface ProjectFile {
   instructions?: ProjectInstruction[]
   /** Idea Ledger: future-scope captures that must not mutate the roadmap */
   ideas?: ProjectIdea[]
+  /** Model-proposed ChangeSets that went through the deterministic validator */
+  changesets?: RoadmapChangeSet[]
+  /** Workspace privacy policy controlling cloud model eligibility for intelligence calls */
+  privacy?: PrivacyPolicy
   workspace?: string
   cancelledAt?: number
 }

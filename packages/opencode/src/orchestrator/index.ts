@@ -26,7 +26,8 @@ import {
   Paused,
   Resumed,
 } from "@opencode-ai/schema/project-control-event"
-import type { ProjectObjective, Roadmap } from "./types"
+import type { ProjectObjective, Roadmap, PrivacyPolicy } from "./types"
+import { applyChangeSet, type RoadmapChangeSet } from "./changeset"
 import { planObjective } from "./planner"
 import { compileContract, contractToPrompt } from "./compiler"
 import { scheduleRoadmap } from "./scheduler"
@@ -42,12 +43,31 @@ import { classifyInstruction, detectSupersession, type ProjectInstruction } from
 import type { ProjectIdea } from "./ideas"
 import { distillWorkerCompletion, compactMemories } from "./distill"
 import { routeProjectMessage } from "./project-message"
+import type { ProjectMemory } from "../brain/types"
+import {
+  extractJsonObject,
+} from "./model-intelligence"
 import { computeDiffstat, toFileDiffstats, type DiffstatSummary, type FileDiffstat } from "./diffstat"
 import { createDiffstatWatcher } from "./diffstat-watcher"
 import { workingTreeStats } from "./working-tree"
 import { loadBrain as loadBrainStore, saveBrain as saveBrainStore } from "../brain/store"
 import { MessageID, PartID } from "@/session/schema"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
+import { AtlasRouter } from "@/router/index"
+import {
+  classifierContextText,
+  collectDistilledItems,
+  parseClassification,
+  replannerContextText,
+  requireOperationsArray,
+  runRoutedCompletion,
+  runValidatedDistillation,
+  sessionDistillerPrompt,
+  toDerivedMemories,
+  workerDistillerPrompt,
+  type RoutedDeps,
+} from "./model-intelligence"
+import { analyzeImpact } from "./impact"
 import {
   loadControlState,
   saveControlState,
@@ -82,7 +102,9 @@ export interface ProjectChatResult {
   ideaText?: string
   reason: string
   /** Instruction Inbox disposition status when intent was an instruction */
-  instructionStatus?: "queued" | "superseded" | "rejected"
+  instructionStatus?: "queued" | "superseded" | "rejected" | "applied" | "failed"
+  replannerApplied?: boolean
+  replannerAttempts?: number
 }
 
 export interface Interface {
@@ -111,6 +133,10 @@ const activeRuns = new Set<string>()
 const diffstatWatchers = new Map<string, ReturnType<typeof createDiffstatWatcher>>()
 const DIFFSTAT_POLL_MS = 2_000
 
+// Model-backed intelligence thresholds. Deterministic paths stay the fast /
+// default path; these gates keep model calls rare and purposeful.
+export const MODEL_REPLANNER_MAX_REPAIRS = 2
+
 // Per-project admission lock: concurrent opens of the same legacy project
 // must never race two root sessions into existence.
 const rootSessionLock = KeyedMutex.makeUnsafe<string>()
@@ -123,6 +149,14 @@ function publish(
   void Effect.runPromise(bridge.publish(definition, data as never) as Effect.Effect<unknown>).catch(() => {})
 }
 
+// Tunable gates keeping model calls rare; deterministic paths stay default.
+export const intelligenceThresholds = {
+  workerMinChars: 1200,
+  failureDetailMinChars: 400,
+  checkpointMinBytes: 6000,
+  sessionEveryMessages: 6,
+}
+
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -131,6 +165,9 @@ export const layer = Layer.effect(
     const promptService = yield* SessionPrompt.Service
     const git = yield* Git.Service
     const supervisor = yield* Supervisor.Service
+    const router = yield* AtlasRouter.Service
+
+    const routedDeps: RoutedDeps = { router, sessions, promptService }
 
     function ensureDiffstatWatcher(projectID: string, workspace: string) {
       if (diffstatWatchers.has(projectID)) return
@@ -364,6 +401,43 @@ export const layer = Layer.effect(
       yield* Effect.promise(() => ensureCheckpointDir(projectID))
       yield* Effect.promise(() => saveCheckpoint(checkpoint))
       publish(bridge, CheckpointCreated, { projectID, checkpointID: checkpoint.id, timestamp: checkpoint.createdAt })
+
+      // Large-checkpoint trigger: distill a concise derived snapshot memory.
+      const snapshotBytes = JSON.stringify(checkpoint).length
+      if (snapshotBytes >= intelligenceThresholds.checkpointMinBytes && !file.cancelledAt) {
+        const evidenceIDs = new Set<string>([checkpoint.id, projectID, ...checkpoint.verification.completedTaskIDs])
+        const slice = [
+          `objective=${file.objective.title}`,
+          `complete=${verification.completedTaskIDs.length}`,
+          `failed=${verification.failedTaskIDs.length}`,
+          `blocked=${verification.blockedTaskIDs.length}`,
+        ]
+        const memoriesResult = yield* Effect.exit(
+          runValidatedDistillation(routedDeps, {
+            purpose: "session_distiller",
+            userText:
+              sessionDistillerPrompt({
+                messages: [`[msg:0] Release/snapshot state: ${slice.join("; ")}`],
+                objective: file.objective.title,
+                constraints: file.objective.constraints,
+                decisions: [],
+                openQuestions: [],
+              }),
+            evidenceIDs,
+            estimatedInputTokens: estimateTokensFor(String(snapshotBytes)),
+            ...(privacyOf(file) !== "standard" ? { privacy: privacyOf(file) } : {}),
+          }),
+        )
+        if (
+          memoriesResult._tag === "Success" &&
+          memoriesResult.value.items.length > 0
+        ) {
+          yield* persistDistilledMemories(
+            projectID,
+            toDerivedMemories(memoriesResult.value.items, { projectID, roadmapVersion }),
+          )
+        }
+      }
       return checkpoint
     })
 
@@ -549,6 +623,27 @@ export const layer = Layer.effect(
                       failureClass: event.failureClass,
                       ...(event.detail ? { detail: event.detail } : {}),
                     })
+                    // Dense failure prose triggers model distillation of lessons;
+                    // deterministic state is untouched on any failure.
+                    if (event.detail && event.detail.length >= intelligenceThresholds.failureDetailMinChars) {
+                      const failedTask = file.roadmap.tasks.find((t) => t.id === event.taskID)
+                      if (failedTask && !file.cancelledAt) {
+                        void Effect.runPromise(
+                          detached(
+                            modelDistillWorker({
+                              projectID,
+                              file,
+                              contractTaskID: failedTask.id,
+                              taskRevision: failedTask.revision,
+                              instructionSummary: file.objective.title,
+                              summary: `Worker for ${failedTask.title} failed: ${event.detail}`,
+                              blockers: [event.detail ?? ""].filter(Boolean),
+                              artifactRefs: [],
+                            }),
+                          ),
+                        ).catch(() => {})
+                      }
+                    }
                     break
                   case "atlas.verification.completed":
                     publish(bridge, VerificationCompleted, {
@@ -604,8 +699,7 @@ export const layer = Layer.effect(
                   status: "completed" as const,
                   summary:
                     ((lastText as unknown as { text?: string })?.text ?? "").slice(0, 2000) || "Task completed",
-                  artifacts: (task.expectedArtifacts ?? []).map((label, index) => ({
-                    id: `${task.id}-artifact-${index + 1}`,
+                  artifacts: (task.expectedArtifacts ?? []).map((label, index) => ({                    id: `${task.id}-artifact-${index + 1}`,
                     taskID: task.id,
                     kind: /test/i.test(label) ? "test_result" : "code_patch",
                     label,
@@ -613,6 +707,7 @@ export const layer = Layer.effect(
                   ...(filesChanged.length > 0 ? { filesChanged } : {}),
                   startedAt: Date.now(),
                   finishedAt: Date.now(),
+                  blockers: [] as string[],
                 }
                 const distilled = distillWorkerCompletion({
                   contract, result: workerResult, projectID, roadmapVersion: file.roadmap.version,
@@ -623,6 +718,30 @@ export const layer = Layer.effect(
                   brain.memories.push(...distilled)
                   await saveBrainStore(projectID, brain)
                   await saveProject(projectID, file)
+                }
+                // Model-backed distillation only when the deterministic pass is
+                // insufficient (dense prose). Failure here keeps deterministic memories.
+                if (
+                  !file.cancelledAt &&
+                  workerResult.summary.length >= intelligenceThresholds.workerMinChars
+                ) {
+                  try {
+                    await Effect.runPromise(
+                      detached(
+                        modelDistillWorker({
+                          projectID,
+                          file,
+                          contractTaskID: contract.taskID,
+                          taskRevision: task.revision,
+                          instructionSummary: contract.objectiveSummary,
+                          summary: workerResult.summary,
+                          blockers: [...(workerResult.blockers ?? [])],
+                          artifactRefs: workerResult.artifacts.map((a) => ({ id: a.id, label: a.label })),
+                          ...(filesChanged.length > 0 ? { filesChanged } : {}),
+                        }),
+                      ),
+                    )
+                  } catch {}
                 }
                 return workerResult
               },
@@ -654,6 +773,189 @@ export const layer = Layer.effect(
       return { started: true }
     })
 
+    // ---- Model-backed intelligence closures ----
+
+    const privacyOf = (file: ProjectFile): PrivacyPolicy => file.privacy ?? "standard"
+    const estimateTokensFor = (text: string): number => Math.max(64, Math.ceil(text.length / 4))
+    const replannerContextSizeChars = (file: ProjectFile) =>
+      file.objective.title.length + file.roadmap.tasks.reduce((sum, task) => sum + task.title.length + 80, 0)
+
+    function extractJsonObjectSafe(text: string): unknown {
+      try {
+        return extractJsonObject(text)
+      } catch {
+        return {}
+      }
+    }
+
+    /** Selective model replanner: propose → validate via applyChangeSet → apply atomically.
+     * Bounded repair loop (max 2 repairs). Roadmap untouched unless a proposal validates. */
+    const runModelReplanner = Effect.fn("Orchestrator.runModelReplanner")(function* (
+      projectID: string,
+      file: ProjectFile,
+      instruction: ProjectInstruction,
+    ) {
+      const brain = yield* Effect.promise(() => loadBrainStore(projectID))
+      const decisions = brain.memories.filter((m) => m.kind === "decision").map((m) => m.title)
+      const contracts = brain.memories.filter((m) => m.kind === "architecture_contract").map((m) => m.title)
+
+      const affectedContext = file.roadmap.tasks.map((task) => ({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        revision: task.revision,
+        dependencies: [...task.dependencies],
+        acceptanceCriteria: [...task.acceptanceCriteria],
+      }))
+
+      let previousError: string | undefined
+      for (let attempt = 0; attempt <= MODEL_REPLANNER_MAX_REPAIRS; attempt++) {
+        if (file.cancelledAt) return { ok: false, attempts: attempt }
+        const proposalResult = yield* Effect.option(
+          runRoutedCompletion(routedDeps, {
+            purpose: "selective_replanner",
+            userText: replannerContextText({
+              instruction: instruction.text,
+              objectiveSummary: file.objective.title,
+              objectiveVersion: file.objective.version,
+              roadmapVersion: file.roadmap.version,
+              affectedTasks: affectedContext,
+              constraints: file.objective.constraints,
+              decisions,
+              contracts,
+              ...(previousError ? { previousError } : {}),
+            }),
+            estimatedInputTokens: estimateTokensFor(String(replannerContextSizeChars(file))),
+            ...(privacyOf(file) !== "standard" ? { privacy: privacyOf(file) } : {}),
+          }),
+        )
+        if (proposalResult._tag === "None") break
+
+        let operations
+        try {
+          operations = requireOperationsArray(extractJsonObjectSafe(proposalResult.value.text))
+        } catch (error) {
+          previousError = error instanceof Error ? error.message : String(error)
+          continue
+        }
+
+        const runningTaskIDs = new Set(file.roadmap.tasks.filter((task) => task.status === "running").map((task) => task.id))
+        const impact = analyzeImpact(file.roadmap, operations, runningTaskIDs)
+        const changeset: RoadmapChangeSet = {
+          id: `cs-model-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+          projectID,
+          instructionID: instruction.id,
+          baseRoadmapVersion: file.roadmap.version,
+          baseObjectiveVersion: file.objective.version,
+          operations,
+          impact,
+          risk: impact.risk,
+          status: "proposed" as const,
+          createdAt: Date.now(),
+        }
+        const applied = applyChangeSet(changeset, file.roadmap, file.objective)
+        if (!applied.ok || !applied.roadmap || !applied.objective) {
+          previousError = applied.error ?? "apply failed"
+          continue
+        }
+        // Atomically accepted only once persisted: mutate authoritative copies then save.
+        file.roadmap = applied.roadmap
+        file.objective = applied.objective
+        file.changesets = [...(file.changesets ?? []), { ...changeset, status: "applied" as const }]
+        yield* Effect.promise(() => writeProjectStrict(projectID, file))
+        return { ok: true, attempts: attempt + 1 }
+      }
+      // Failure policy: no roadmap mutation; instruction remains failed.
+      return { ok: false, attempts: MODEL_REPLANNER_MAX_REPAIRS + 1 }
+    })
+
+    const persistDistilledMemories = Effect.fn("Orchestrator.persistDistilledMemories")(function* (
+      projectID: string,
+      memories: ProjectMemory[],
+    ) {
+      if (memories.length === 0) return 0
+      const brain = yield* Effect.promise(() => loadBrainStore(projectID))
+      const existingKeys = new Set(brain.memories.map((m) => `${m.kind}:${m.title}:${m.content}`))
+      const fresh = memories.filter((m) => !existingKeys.has(`${m.kind}:${m.title}:${m.content}`))
+      brain.memories.push(...fresh)
+      yield* Effect.promise(() => saveBrainStore(projectID, brain))
+      return fresh.length
+    })
+
+    /** Worker-completion model distillation when deterministic extraction is insufficient. */
+    const modelDistillWorker = Effect.fn("Orchestrator.modelDistillWorker")(function* (input: {
+      projectID: string
+      file: ProjectFile
+      contractTaskID: string
+      taskRevision: number
+      instructionSummary: string
+      summary: string
+      blockers: string[]
+      artifactRefs: { id: string; label: string }[]
+      filesChanged?: string[]
+    }) {
+      if (input.file.cancelledAt) return 0
+      const evidenceIDs = new Set<string>([
+        input.contractTaskID,
+        ...input.artifactRefs.map((a) => a.id),
+        ...(input.filesChanged ?? []),
+      ])
+      const distillEffect = runValidatedDistillation(routedDeps, {
+        purpose: "worker_distiller",
+        userText:
+          workerDistillerPrompt({
+            instructionSummary: input.instructionSummary,
+            taskID: input.contractTaskID,
+            taskRevision: input.taskRevision,
+            summary: input.summary,
+            blockers: input.blockers,
+            artifactRefs: input.artifactRefs,
+            verificationRefs: [],
+            ...(input.filesChanged ? { filesChanged: input.filesChanged } : {}),
+          }),
+        evidenceIDs,
+        estimatedInputTokens: estimateTokensFor(input.summary),
+        ...(privacyOf(input.file) !== "standard" ? { privacy: privacyOf(input.file) } : {}),
+      })
+      const result = yield* distillEffect.pipe(Effect.option)
+      if (result._tag === "None") return 0 // deterministic extraction remains
+      const memories = toDerivedMemories(result.value.items, { projectID: input.projectID })
+      return yield* persistDistilledMemories(input.projectID, memories)
+    })
+
+    /** Root-conversation session distillation when the conversation grows past
+     * the threshold: decisions/corrections/constraints/ideas become Brain memories. */
+    const modelDistillSession = Effect.fn("Orchestrator.modelDistillSession")(function* (input: {
+      projectID: string
+      file: ProjectFile
+      rootSessionID: string
+      userTexts: string[]
+    }) {
+      if (input.file.cancelledAt) return 0
+      const brain = yield* Effect.promise(() => loadBrainStore(input.projectID))
+      const evidenceIDs = new Set<string>(input.userTexts.map((_, index) => `msg:${index}`))
+      const distillEffect = runValidatedDistillation(routedDeps, {
+        purpose: "session_distiller",
+        userText:
+          sessionDistillerPrompt({
+            messages: input.userTexts,
+            objective: input.file.objective.title,
+            constraints: input.file.objective.constraints,
+            decisions: brain.memories.filter((m) => m.kind === "decision").map((m) => m.title),
+            openQuestions: brain.memories.filter((m) => m.kind === "open_question").map((m) => m.title),
+          }),
+        evidenceIDs,
+        estimatedInputTokens: estimateTokensFor(input.userTexts.join(" ")),
+        ...(privacyOf(input.file) !== "standard" ? { privacy: privacyOf(input.file) } : {}),
+      })
+      const result = yield* Effect.exit(distillEffect)
+      if (result._tag === "Failure") {
+        return 0 // deterministic fallback; nothing partial written
+      }
+      const memories = toDerivedMemories(result.value.items, { projectID: input.projectID })
+      return yield* persistDistilledMemories(input.projectID, memories)
+    })
+
     const chat = Effect.fn("Orchestrator.chat")(function* (input: { projectID: string; text: string }) {
       // Project conversation resolves through the canonical root session:
       // projectID → rootSessionID → routing. Workers are never addressed here.
@@ -661,9 +963,69 @@ export const layer = Layer.effect(
       const file = yield* Effect.promise(() => loadProject(input.projectID))
       if (!file?.sessionID) return yield* Effect.fail(new Error(`Unknown project: ${input.projectID}`))
       const rootSessionID = file.sessionID
+      const privacy = file.privacy ?? "standard"
+      const cancelled = () => Boolean(file.cancelledAt)
 
-      const route = routeProjectMessage(input.text)
+      let route = routeProjectMessage(input.text)
+
+
+      // Ambiguous deterministic routes escalate once to the model-backed
+      // classifier through the real routed stack; any failure falls straight
+      // back to the safe deterministic route.
+      let modelRouted: { providerID: string; modelID: string } | undefined
+      if (route.ambiguous && !cancelled()) {
+        const classificationEffect = Effect.gen(function* () {
+          const rawReply = yield* runRoutedCompletion(routedDeps, {
+            purpose: "project_message_classifier",
+            userText:
+              classifierContextText({
+                message: input.text,
+                objectiveTitle: file.objective.title,
+                objectiveVersion: file.objective.version,
+                roadmapVersion: file.roadmap.version,
+                constraints: file.objective.constraints,
+                taskIDsAndTitles: file.roadmap.tasks.map((task) => ({ id: task.id, title: task.title })),
+              }) + "\n\n(valid referencedTaskIDs are only IDs from Known tasks)",
+            ...(privacy !== "standard" ? { privacy } : {}),
+          })
+          const parsedYield = yield* Effect.try({
+            try: () =>
+              parseClassification(
+                extractJsonObjectSafe(rawReply.text),
+                new Set(file.roadmap.tasks.map((task) => task.id)),
+              ),
+            catch: (error) => new Error(error instanceof Error ? error.message : String(error)),
+          })
+          return { parsed: parsedYield, reply: rawReply }
+        })
+        const attempted = yield* classificationEffect.pipe(Effect.option)
+        if (attempted._tag === "Some") {
+          const parsed = attempted.value.parsed
+          if (parsed.confidence >= 0.5) {
+            switch (parsed.intent) {
+              case "instruction":
+              case "direct_project_command":
+                route = { intent: "instruction", instructionText: input.text, reason: `model:${parsed.reasonCode}` }
+                break
+              case "memory_correction":
+                route = { intent: "memory_correction", instructionText: input.text, reason: `model:${parsed.reasonCode}` }
+                break
+              case "idea":
+                route = { intent: "idea", instructionText: input.text, reason: `model:${parsed.reasonCode}` }
+                break
+              case "status_request":
+                route = { intent: "status_request", queryText: input.text, reason: `model:${parsed.reasonCode}` }
+                break
+              default:
+                route = { intent: "question", queryText: input.text, reason: `model:${parsed.reasonCode}` }
+            }
+          }
+        }
+      }
+
       let instructionStatus: ProjectChatResult["instructionStatus"]
+      let appliedChangeSetOk: boolean | undefined
+      let appliedChangeSetAttempts: number | undefined
 
       if ((route.intent === "instruction" || route.intent === "memory_correction" || route.intent === "direct_project_command") && route.instructionText) {
         const knownTaskIDs = file.roadmap.tasks.map((task) => task.id)
@@ -677,6 +1039,7 @@ export const layer = Layer.effect(
         const existing = file.instructions ?? []
         const supersession = detectSupersession(route.instructionText, existing)
 
+        let instruction: ProjectInstruction | undefined
         if (supersession.duplicateOfID) {
           instructionStatus = "rejected"
         } else {
@@ -686,7 +1049,7 @@ export const layer = Layer.effect(
             }
           }
           const now = Date.now()
-          const instruction: ProjectInstruction = {
+          instruction = {
             id: `ins-${now.toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
             projectID: input.projectID,
             text: route.instructionText,
@@ -713,6 +1076,28 @@ export const layer = Layer.effect(
           file.instructions = existing
           instructionStatus = supersession.supersedesID ? "superseded" : "queued"
         }
+
+        // Complex instructions (architecture-level) escalate to the selective
+        // model replanner; the deterministic ChangeSet validator remains the
+        // only mutation authority and simple edits never invoke a model.
+        const requiresMutation = !["idea", "no_change", "clarification"].includes(classified.kind)
+        const complexInstruction =
+          /\b(architecture|strategy|migrate|boundary|boundaries)\b/i.test(route.instructionText ?? "") ||
+          /,\s*(but|while|without)\b/i.test(route.instructionText ?? "") ||
+          /\b(but|while) .*?(keep|without|avoid)/i.test(route.instructionText ?? "")
+        if (
+          (classified.kind === "architecture_change" || complexInstruction) &&
+          !cancelled() &&
+          instruction &&
+          instructionStatus !== "rejected"
+        ) {
+          const outcome = yield* runModelReplanner(input.projectID, file, instruction)
+          appliedChangeSetOk = outcome.ok
+          appliedChangeSetAttempts = outcome.attempts
+          instruction.status = outcome.ok ? "applied" : "failed"
+          instruction.updatedAt = Date.now()
+          instructionStatus = outcome.ok ? "applied" : "failed"
+        }
       } else if (route.intent === "idea" && route.ideaText) {
         const now = Date.now()
         const idea: ProjectIdea = {
@@ -733,6 +1118,32 @@ export const layer = Layer.effect(
       }
       yield* Effect.promise(() => saveProject(input.projectID, file))
 
+      // Conversation threshold trigger for model-backed session distillation:
+      // every Nth user message distills a bounded recent slice into Brain memories.
+      if (!cancelled()) {
+        const history = yield* sessions
+          .messages({ sessionID: rootSessionID as never, limit: 50 })
+          .pipe(Effect.option)
+        if (history._tag === "Some") {
+          const userTexts = history.value
+            .filter((entry) => entry.info.role === "user")
+            .map((entry) =>
+              entry.parts
+                .filter((part) => part.type === "text")
+                .map((part) => (part as unknown as { text?: string }).text ?? "")
+                .join(" "),
+            )
+            .filter((text) => text.length > 0)
+          if (userTexts.length > 0 && userTexts.length % intelligenceThresholds.sessionEveryMessages === 0) {
+            const slice = userTexts.slice(-intelligenceThresholds.sessionEveryMessages)
+            yield* modelDistillSession({ projectID: input.projectID, file, rootSessionID, userTexts: slice }).pipe(
+              Effect.map(() => undefined),
+              Effect.catch(() => Effect.void),
+            )
+          }
+        }
+      }
+
       return {
         intent: route.intent,
         rootSessionID,
@@ -741,6 +1152,7 @@ export const layer = Layer.effect(
         ...(route.ideaText ? { ideaText: route.ideaText } : {}),
         reason: route.reason,
         ...(instructionStatus ? { instructionStatus } : {}),
+        ...(appliedChangeSetOk !== undefined ? { replannerApplied: appliedChangeSetOk, replannerAttempts: appliedChangeSetAttempts } : {}),
       }
     })
 
@@ -871,7 +1283,8 @@ export const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer: layer.pipe(Layer.orDie),
-  deps: [EventV2Bridge.node, Session.node, SessionPrompt.node, Git.node, Supervisor.node],
+  deps: [EventV2Bridge.node, Session.node, SessionPrompt.node, Git.node, Supervisor.node, AtlasRouter.node],
 })
 
 export * as Orchestrator from "."
+

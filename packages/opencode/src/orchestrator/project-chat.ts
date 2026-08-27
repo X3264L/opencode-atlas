@@ -26,6 +26,12 @@ export interface ProjectMessageRoute {
   /** For questions, the query forwarded to brain retrieval */
   queryText?: string
   reason: string
+  /**
+   * True when no deterministic signal matched confidently. Callers may
+   * escalate such routes to the model-backed classifier; the deterministic
+   * route stays the safe fallback.
+   */
+  ambiguous?: boolean
 }
 
 export function classifyProjectMessage(text: string): ProjectMessageRoute {
@@ -71,5 +77,7 @@ export function classifyProjectMessage(text: string): ProjectMessageRoute {
     return { intent: "status_request", queryText: trimmed, reason: "status keyword detected" }
   }
 
-  return { intent: "question", queryText: trimmed, reason: "default to Q&A for non-imperative messages" }
+  // Ambiguous: no strong deterministic signal matched. The default remains
+  // Q&A, but callers may escalate this route to the model-backed classifier.
+  return { intent: "question", queryText: trimmed, reason: "default to Q&A for non-imperative messages", ambiguous: true }
 }

@@ -3296,7 +3296,7 @@ export type AtlasProjectChatResult = {
   queryText?: string
   ideaText?: string
   reason: string
-  instructionStatus?: "queued" | "superseded" | "rejected"
+  instructionStatus?: "queued" | "superseded" | "rejected" | "applied" | "failed"
 }
 
 export type AtlasBrainQueryInput = {

@@ -541,7 +541,7 @@ export const ProjectChatResponse = Schema.Struct({
   queryText: Schema.optionalKey(Schema.String),
   ideaText: Schema.optionalKey(Schema.String),
   reason: Schema.String,
-  instructionStatus: Schema.optionalKey(Schema.Literals(["queued", "superseded", "rejected"])),
+  instructionStatus: Schema.optionalKey(Schema.Literals(["queued", "superseded", "rejected", "applied", "failed"])),
 }).annotate({ identifier: "AtlasProjectChatResult" })
 
 export const OrchestratorPaths = {
