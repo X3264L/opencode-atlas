@@ -30,7 +30,7 @@ const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([Orchestrator.node, EventV2Bridge.node]),
     [
-      [Session.node, Layer.mock(Session.Service, {})],
+      [Session.node, Layer.mock(Session.Service, { create: () => Effect.succeed({ id: "sess-diffstat-root" } as never) })],
       [SessionPrompt.node, Layer.mock(SessionPrompt.Service, {})],
       [Git.node, fakeGit],
     ],

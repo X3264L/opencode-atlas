@@ -115,6 +115,8 @@ export type Event =
   | EventAtlasProjectBlocked
   | EventAtlasProjectCancelled
   | EventAtlasDiffstatChanged
+  | EventAtlasProjectSessionCreated
+  | EventAtlasProjectSessionReconciled
   | EventAtlasSupervisorHealthChanged
   | EventAtlasSupervisorIncidentOpened
   | EventAtlasSupervisorIncidentClassified
@@ -1874,6 +1876,23 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "atlas.project.session.created"
+        properties: {
+          projectID: string
+          sessionID: string
+        }
+      }
+    | {
+        id: string
+        type: "atlas.project.session.reconciled"
+        properties: {
+          projectID: string
+          sessionID: string
+          previousSessionID?: string
+        }
+      }
+    | {
+        id: string
         type: "atlas.supervisor.health.changed"
         properties: {
           projectID: string
@@ -3263,6 +3282,21 @@ export type AtlasOrchestratorProject = {
     acceptanceCriteria: Array<string>
   }
   roadmap: AtlasOrchestratorRoadmap
+  rootSessionID?: string
+}
+
+export type AtlasProjectChatInput = {
+  text: string
+}
+
+export type AtlasProjectChatResult = {
+  intent: string
+  rootSessionID: string
+  instructionText?: string
+  queryText?: string
+  ideaText?: string
+  reason: string
+  instructionStatus?: "queued" | "superseded" | "rejected"
 }
 
 export type AtlasBrainQueryInput = {
@@ -4003,6 +4037,8 @@ export type V2Event =
   | AtlasProjectBlocked
   | AtlasProjectCancelled
   | AtlasDiffstatChanged
+  | AtlasProjectSessionCreated
+  | AtlasProjectSessionReconciled
   | AtlasSupervisorHealthChanged
   | AtlasSupervisorIncidentOpened
   | AtlasSupervisorIncidentClassified
@@ -7612,6 +7648,43 @@ export type AtlasDiffstatChanged = {
   }
 }
 
+export type AtlasProjectSessionCreated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.session.created"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    sessionID: string
+  }
+}
+
+export type AtlasProjectSessionReconciled = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "atlas.project.session.reconciled"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    projectID: string
+    sessionID: string
+    previousSessionID?: string
+  }
+}
+
 export type AtlasSupervisorHealthChanged = {
   id: string
   metadata?: {
@@ -9238,6 +9311,25 @@ export type EventAtlasDiffstatChanged = {
     additions: number | "NaN" | "Infinity" | "-Infinity"
     deletions: number | "NaN" | "Infinity" | "-Infinity"
     files: number | "NaN" | "Infinity" | "-Infinity"
+  }
+}
+
+export type EventAtlasProjectSessionCreated = {
+  id: string
+  type: "atlas.project.session.created"
+  properties: {
+    projectID: string
+    sessionID: string
+  }
+}
+
+export type EventAtlasProjectSessionReconciled = {
+  id: string
+  type: "atlas.project.session.reconciled"
+  properties: {
+    projectID: string
+    sessionID: string
+    previousSessionID?: string
   }
 }
 
@@ -11579,6 +11671,36 @@ export type AtlasOrchestratorRoadmapResponses = {
 
 export type AtlasOrchestratorRoadmapResponse =
   AtlasOrchestratorRoadmapResponses[keyof AtlasOrchestratorRoadmapResponses]
+
+export type AtlasOrchestratorChatData = {
+  body?: AtlasProjectChatInput
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/orchestrator/projects/{projectID}/chat"
+}
+
+export type AtlasOrchestratorChatErrors = {
+  /**
+   * LocalAiError | InvalidRequestError
+   */
+  400: LocalAiError | InvalidRequestError
+}
+
+export type AtlasOrchestratorChatError = AtlasOrchestratorChatErrors[keyof AtlasOrchestratorChatErrors]
+
+export type AtlasOrchestratorChatResponses = {
+  /**
+   * Routed project conversation result
+   */
+  200: AtlasProjectChatResult
+}
+
+export type AtlasOrchestratorChatResponse = AtlasOrchestratorChatResponses[keyof AtlasOrchestratorChatResponses]
 
 export type AtlasBrainQueryData = {
   body?: AtlasBrainQueryInput

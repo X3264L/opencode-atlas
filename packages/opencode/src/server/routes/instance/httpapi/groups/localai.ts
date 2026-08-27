@@ -526,7 +526,23 @@ export const OrchestratorProject = Schema.Struct({
     acceptanceCriteria: Schema.Array(Schema.String),
   }),
   roadmap: OrchestratorRoadmap,
+  /** Canonical root project conversation session; auto-created/reconciled on open */
+  rootSessionID: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "AtlasOrchestratorProject" })
+
+export const ProjectChatPayload = Schema.Struct({
+  text: Schema.String,
+}).annotate({ identifier: "AtlasProjectChatInput" })
+
+export const ProjectChatResponse = Schema.Struct({
+  intent: Schema.String,
+  rootSessionID: Schema.String,
+  instructionText: Schema.optionalKey(Schema.String),
+  queryText: Schema.optionalKey(Schema.String),
+  ideaText: Schema.optionalKey(Schema.String),
+  reason: Schema.String,
+  instructionStatus: Schema.optionalKey(Schema.Literals(["queued", "superseded", "rejected"])),
+}).annotate({ identifier: "AtlasProjectChatResult" })
 
 export const OrchestratorPaths = {
   projects: "/orchestrator/projects",
@@ -535,6 +551,7 @@ export const OrchestratorPaths = {
   projectStart: "/orchestrator/projects/:projectID/start",
   projectCancel: "/orchestrator/projects/:projectID/cancel",
   projectRoadmap: "/orchestrator/projects/:projectID/roadmap",
+  projectChat: "/orchestrator/projects/:projectID/chat",
 } as const
 
 // ---- Project Control (Checkpoint / Pause / Resume) ---------------------------
@@ -942,6 +959,20 @@ export const LocalAiApi = HttpApi.make("localai")
             identifier: "atlas.orchestrator.roadmap",
             summary: "Get project roadmap",
             description: "Returns the versioned roadmap IR including per-task status and dependencies.",
+          }),
+        ),
+        HttpApiEndpoint.post("orchestratorChat", LocalAiPaths.projectChat, {
+          params: { projectID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          payload: ProjectChatPayload,
+          success: described(ProjectChatResponse, "Routed project conversation result"),
+          error: LocalAiApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "atlas.orchestrator.chat",
+            summary: "Send a project conversation message",
+            description:
+              "Delivers a human message to the canonical root project conversation session and routes it by intent (question → Brain Q&A, instruction → Instruction Inbox, idea → Idea Ledger).",
           }),
         ),
         HttpApiEndpoint.post("brainQuery", LocalAiPaths.brainQuery, {

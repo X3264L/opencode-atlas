@@ -78,6 +78,20 @@ export const DiffstatChanged = Event.define({
   },
 })
 
+export const ProjectSessionCreated = Event.define({
+  type: "atlas.project.session.created",
+  schema: { projectID: Schema.String, sessionID: Schema.String },
+})
+
+export const ProjectSessionReconciled = Event.define({
+  type: "atlas.project.session.reconciled",
+  schema: {
+    projectID: Schema.String,
+    sessionID: Schema.String,
+    previousSessionID: optional(Schema.String),
+  },
+})
+
 export const Definitions = Event.inventory(
   ProjectCreated,
   RoadmapUpdated,
@@ -90,4 +104,6 @@ export const Definitions = Event.inventory(
   ProjectBlocked,
   ProjectCancelled,
   DiffstatChanged,
+  ProjectSessionCreated,
+  ProjectSessionReconciled,
 )

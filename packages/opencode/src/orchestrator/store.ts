@@ -2,6 +2,8 @@ import path from "path"
 import Bun from "bun"
 import { Global } from "@opencode-ai/core/global"
 import type { Checkpoint, ProjectObjective, Roadmap, WorkerArtifact } from "./types"
+import type { ProjectInstruction } from "./instructions"
+import type { ProjectIdea } from "./ideas"
 
 // File-backed project persistence under the Atlas state dir. Declarative
 // state only; survives restart and is inspectable afterwards.
@@ -11,8 +13,14 @@ export interface ProjectFile {
   roadmap: Roadmap
   checkpoints: Checkpoint[]
   artifacts: WorkerArtifact[]
-  /** sessionID of the root/project conversation */
+  /** Canonical root project conversation session (human ↔ organization). Workers are its children. */
   sessionID?: string
+  /** When the root session association was last confirmed durable; unconfirmed IDs re-verify on open */
+  rootSessionConfirmedAt?: number
+  /** Instruction Inbox: project conversation instructions awaiting/mutating the roadmap */
+  instructions?: ProjectInstruction[]
+  /** Idea Ledger: future-scope captures that must not mutate the roadmap */
+  ideas?: ProjectIdea[]
   workspace?: string
   cancelledAt?: number
 }
@@ -21,9 +29,18 @@ function dirFor(projectID: string) {
   return path.join(Global.Path.state, "orchestrator", projectID)
 }
 
+/**
+ * Persistence that reports failure instead of swallowing. Used by flows that
+ * must reconcile side effects (e.g. removing a just-created root session when
+ * project identity cannot be committed).
+ */
+export async function writeProjectStrict(projectID: string, file: ProjectFile) {
+  await Bun.write(path.join(dirFor(projectID), "project.json"), JSON.stringify(file, null, 2))
+}
+
 export async function saveProject(projectID: string, file: ProjectFile) {
   try {
-    await Bun.write(path.join(dirFor(projectID), "project.json"), JSON.stringify(file, null, 2))
+    await writeProjectStrict(projectID, file)
   } catch {}
 }
 

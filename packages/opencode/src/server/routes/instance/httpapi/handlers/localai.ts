@@ -171,6 +171,7 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
               acceptanceCriteria: file.objective.acceptanceCriteria,
             },
             roadmap: file.roadmap,
+            ...(file.sessionID ? { rootSessionID: file.sessionID } : {}),
           }
         }).pipe(Effect.mapError(mapError)),
       )
@@ -196,6 +197,9 @@ export const localaiHandlers = HttpApiBuilder.group(InstanceHttpApi, "localai", 
           }
           return file.roadmap
         }).pipe(Effect.mapError(mapError)),
+      )
+      .handle("orchestratorChat", (ctx: { params: { projectID: string }; payload: { text: string } }) =>
+        orchestrator.chat({ projectID: ctx.params.projectID, text: ctx.payload.text }).pipe(Effect.mapError(mapError)),
       )
       .handle("brainQuery", (ctx: { params: { projectID: string }; payload: { query: string; includeHistorical?: boolean; maxItems?: number } }) =>
         Effect.gen(function* () {

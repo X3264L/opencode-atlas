@@ -21,6 +21,8 @@ import type {
   AtlasMissionControlSnapshotResponses,
   AtlasOrchestratorCancelErrors,
   AtlasOrchestratorCancelResponses,
+  AtlasOrchestratorChatErrors,
+  AtlasOrchestratorChatResponses,
   AtlasOrchestratorCreateErrors,
   AtlasOrchestratorCreateInput,
   AtlasOrchestratorCreateResponses,
@@ -33,6 +35,7 @@ import type {
   AtlasOrchestratorStartErrors,
   AtlasOrchestratorStartResponses,
   AtlasPauseInput,
+  AtlasProjectChatInput,
   AtlasProjectCheckpointCreateErrors,
   AtlasProjectCheckpointCreateResponses,
   AtlasProjectCheckpointGetErrors,
@@ -3255,6 +3258,49 @@ export class Orchestrator extends HeyApiClient {
       url: "/orchestrator/projects/{projectID}/roadmap",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Send a project conversation message
+   *
+   * Delivers a human message to the canonical root project conversation session and routes it by intent (question → Brain Q&A, instruction → Instruction Inbox, idea → Idea Ledger).
+   */
+  public chat<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+      atlasProjectChatInput?: AtlasProjectChatInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "atlasProjectChatInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      AtlasOrchestratorChatResponses,
+      AtlasOrchestratorChatErrors,
+      ThrowOnError
+    >({
+      url: "/orchestrator/projects/{projectID}/chat",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 }

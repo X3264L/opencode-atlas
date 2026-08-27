@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
@@ -11,6 +12,8 @@ import {
   ProjectBlocked,
   ProjectCompleted,
   ProjectCreated,
+  ProjectSessionCreated,
+  ProjectSessionReconciled,
   RoadmapUpdated,
   TaskState,
   WorkerCompleted,
@@ -27,13 +30,24 @@ import type { ProjectObjective, Roadmap } from "./types"
 import { planObjective } from "./planner"
 import { compileContract, contractToPrompt } from "./compiler"
 import { scheduleRoadmap } from "./scheduler"
-import { loadProject, recoverStaleRuns, saveProject, listProjects, type ProjectFile } from "./store"
+import {
+  loadProject,
+  recoverStaleRuns,
+  saveProject,
+  writeProjectStrict,
+  listProjects,
+  type ProjectFile,
+} from "./store"
+import { classifyInstruction, detectSupersession, type ProjectInstruction } from "./instructions"
+import type { ProjectIdea } from "./ideas"
 import { distillWorkerCompletion, compactMemories } from "./distill"
 import { routeProjectMessage } from "./project-message"
 import { computeDiffstat, toFileDiffstats, type DiffstatSummary, type FileDiffstat } from "./diffstat"
 import { createDiffstatWatcher } from "./diffstat-watcher"
 import { workingTreeStats } from "./working-tree"
 import { loadBrain as loadBrainStore, saveBrain as saveBrainStore } from "../brain/store"
+import { MessageID, PartID } from "@/session/schema"
+import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import {
   loadControlState,
   saveControlState,
@@ -54,18 +68,31 @@ export interface CreateInput {
   acceptanceCriteria: string[]
   constraints?: string[]
   priorities?: string[]
+  /** Backward compatibility: an existing session to adopt as root. Normal callers omit it. */
   sessionID?: string
   workspace?: string
 }
 
+export interface ProjectChatResult {
+  intent: string
+  /** Canonical root project conversation session the message was persisted into */
+  rootSessionID: string
+  instructionText?: string
+  queryText?: string
+  ideaText?: string
+  reason: string
+  /** Instruction Inbox disposition status when intent was an instruction */
+  instructionStatus?: "queued" | "superseded" | "rejected"
+}
+
 export interface Interface {
-  readonly createProject: (input: CreateInput) => Effect.Effect<ProjectObjective>
-  readonly get: (projectID: string) => Effect.Effect<ProjectFile | undefined>
+  readonly createProject: (input: CreateInput) => Effect.Effect<ProjectObjective, Error>
+  readonly get: (projectID: string) => Effect.Effect<ProjectFile | undefined, Error>
   readonly list: () => Effect.Effect<string[]>
   readonly plan: (projectID: string) => Effect.Effect<Roadmap, Error>
   readonly start: (projectID: string) => Effect.Effect<{ started: boolean }, Error>
   readonly cancel: (projectID: string) => Effect.Effect<boolean, Error>
-  readonly chat: (input: { projectID: string; text: string }) => Effect.Effect<ReturnType<typeof routeProjectMessage>, Error>
+  readonly chat: (input: { projectID: string; text: string }) => Effect.Effect<ProjectChatResult, Error>
   readonly compactBrain: (projectID: string) => Effect.Effect<number | undefined, Error>
   readonly workingTreeSummary: (projectID: string) => Effect.Effect<DiffstatSummary | undefined>
   readonly workingTreeFiles: (projectID: string) => Effect.Effect<FileDiffstat[]>
@@ -83,6 +110,10 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Or
 const activeRuns = new Set<string>()
 const diffstatWatchers = new Map<string, ReturnType<typeof createDiffstatWatcher>>()
 const DIFFSTAT_POLL_MS = 2_000
+
+// Per-project admission lock: concurrent opens of the same legacy project
+// must never race two root sessions into existence.
+const rootSessionLock = KeyedMutex.makeUnsafe<string>()
 
 function publish(
   bridge: typeof EventV2Bridge.Service.Service,
@@ -143,6 +174,104 @@ export const layer = Layer.effect(
         return paused
       }
       return control
+    })
+
+    // ---- Root project conversation session ----
+
+    /** Appends a human message (role=user + text part) into a session without model invocation */
+    const appendRootMessage = Effect.fn("Orchestrator.appendRootMessage")(function* (rootSessionID: string, text: string) {
+      const messageID = MessageID.ascending()
+      yield* sessions.updateMessage({
+        id: messageID,
+        sessionID: rootSessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: "user",
+        model: { providerID: "atlas", modelID: "project-conversation" },
+        tools: {},
+        mode: "",
+      } as never)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        sessionID: rootSessionID,
+        messageID,
+        type: "text",
+        text,
+        synthetic: false,
+      } as never)
+    })
+
+    const createRootSessionFor = Effect.fn("Orchestrator.createRootSession")(function* (file: ProjectFile) {
+      return yield* sessions.create({
+        title: `[Atlas Project] ${file.objective.title}`,
+        ...(file.workspace ? { metadata: { atlasProjectWorkspace: file.workspace } } : {}),
+      })
+    })
+
+    const persistRoot = Effect.fn("Orchestrator.persistRoot")(function* (projectID: string, file: ProjectFile) {
+      yield* Effect.promise(() => writeProjectStrict(projectID, file))
+    })
+
+    type RootSessionOutcome =
+      | { kind: "reused"; sessionID: string }
+      | { kind: "created"; sessionID: string }
+      | { kind: "reconciled"; sessionID: string; previousSessionID: string }
+
+    /** Durable session projection is asynchronous: poll briefly before declaring an ID invalid */
+    const findSessionEventually = Effect.fn("Orchestrator.findSessionEventually")(function* (sessionID: string) {
+      let found = yield* sessions.get(sessionID as never).pipe(Effect.option)
+      let attempt = 0
+      while (found._tag === "None" && attempt < 24) {
+        attempt += 1
+        yield* Effect.sleep("50 millis")
+        found = yield* sessions.get(sessionID as never).pipe(Effect.option)
+      }
+      return found
+    })
+
+    /**
+     * Invariant: every loaded project ends with exactly one canonical root
+     * conversation session. Existing valid IDs are reused verbatim; missing or
+     * invalid IDs are reconciled once under a per-project keyed mutex, so two
+     * concurrent openers of the same legacy project cannot create two roots.
+     */
+    const ensureRootSession = Effect.fn("Orchestrator.ensureRootSession")(function* (projectID: string) {
+      return yield* rootSessionLock.withLock(projectID)(
+        Effect.gen(function* () {
+          // Fresh read inside the lock so concurrent migrations converge.
+          const current = yield* Effect.promise(() => loadProject(projectID))
+          if (!current) return yield* Effect.fail(new Error(`Unknown project: ${projectID}`))
+
+          if (current.sessionID) {
+            const previousSessionID = current.sessionID
+            // Confirmed roots are trusted without re-probing the (possibly
+            // async) session projection; only unconfirmed/legacy IDs verify.
+            if (typeof current.rootSessionConfirmedAt === "number") {
+              return { kind: "reused" as const, sessionID: previousSessionID }
+            }
+            const existing = yield* findSessionEventually(previousSessionID)
+            if (existing._tag === "Some") {
+              current.rootSessionConfirmedAt = Date.now()
+              yield* persistRoot(projectID, current)
+              return { kind: "reused" as const, sessionID: previousSessionID }
+            }
+            // Stored record is gone/corrupt → reconcile to one replacement root
+            const replacement = yield* createRootSessionFor(current)
+            current.sessionID = replacement.id
+            current.rootSessionConfirmedAt = Date.now()
+            yield* persistRoot(projectID, current)
+            publish(bridge, ProjectSessionReconciled, { projectID, sessionID: replacement.id, previousSessionID })
+            return { kind: "reconciled" as const, sessionID: replacement.id, previousSessionID }
+          }
+
+          const created = yield* createRootSessionFor(current)
+          current.sessionID = created.id
+          current.rootSessionConfirmedAt = Date.now()
+          yield* persistRoot(projectID, current)
+          publish(bridge, ProjectSessionCreated, { projectID, sessionID: created.id })
+          return { kind: "created" as const, sessionID: created.id }
+        }),
+      )
     })
 
     const captureCheckpoint = Effect.fn("Orchestrator.captureCheckpoint")(function* (projectID: string) {
@@ -258,17 +387,52 @@ export const layer = Layer.effect(
         roadmap: { version: 0, objectiveID: objective.id, status: "planning", tasks: [] },
         checkpoints: [],
         artifacts: [],
-        ...(input.sessionID ? { sessionID: input.sessionID } : {}),
         ...(input.workspace ? { workspace: input.workspace } : {}),
       }
-      yield* Effect.promise(() => saveProject(projectID, file))
+
+      // Root conversation session is created by default; an explicit sessionID
+      // argument is only honored for backward compatibility when it exists.
+      let createdSessionID: string | undefined
+      if (input.sessionID) {
+        const existing = yield* findSessionEventually(input.sessionID)
+        if (existing._tag === "Some") {
+          file.sessionID = existing.value.id
+          file.rootSessionConfirmedAt = Date.now()
+        }
+      }
+      if (!file.sessionID) {
+        const info = yield* createRootSessionFor(file)
+        file.sessionID = info.id
+        // New roots are trusted immediately: they were created by this very
+        // context, so no visibility polling is required before confirming.
+        file.rootSessionConfirmedAt = Date.now()
+        createdSessionID = info.id
+      }
+
+      // Avoid orphan state: if the project identity cannot be committed, a
+      // just-created root session is removed and creation fails clearly.
+      const committed = yield* Effect.exit(Effect.promise(() => writeProjectStrict(projectID, file)))
+      if (committed._tag === "Failure") {
+        if (createdSessionID) {
+          yield* sessions.remove(createdSessionID as never).pipe(Effect.catch(() => Effect.void))
+        }
+        return yield* Effect.fail(new Error(`Failed to persist project ${projectID}`))
+      }
+
       yield* Effect.promise(() => saveControlState(projectID, { status: "running" }))
       if (input.workspace) ensureDiffstatWatcher(projectID, input.workspace)
+      if (createdSessionID) {
+        publish(bridge, ProjectSessionCreated, { projectID, sessionID: createdSessionID })
+      }
       publish(bridge, ProjectCreated, { projectID, title: input.title })
       return objective
     })
 
     const get = Effect.fn("Orchestrator.get")(function* (projectID: string) {
+      const probe = yield* Effect.promise(() => loadProject(projectID))
+      if (!probe) return undefined
+      // One canonical root session per project; legacy/missing IDs migrate here.
+      yield* ensureRootSession(projectID)
       const file = yield* Effect.promise(() => loadProject(projectID))
       if (!file) return undefined
       // Reconcile pausing -> paused on every load for restart safety
@@ -282,7 +446,12 @@ export const layer = Layer.effect(
     })
 
     const plan = Effect.fn("Orchestrator.plan")(function* (projectID: string) {
-      const file = yield* Effect.promise(() => loadProject(projectID))
+      let file = yield* Effect.promise(() => loadProject(projectID))
+      if (!file) {
+        // Transient FS jitter guard: retry once before failing
+        yield* Effect.sleep("120 millis")
+        file = yield* Effect.promise(() => loadProject(projectID))
+      }
       if (!file) return yield* Effect.fail(new Error(`Unknown project: ${projectID}`))
       yield* reconcileControlOnLoad(projectID, file)
       const roadmap = planObjective(file.objective)
@@ -311,6 +480,13 @@ export const layer = Layer.effect(
       const file = yield* Effect.promise(() => loadProject(projectID))
       if (!file) return yield* Effect.fail(new Error(`Unknown project: ${projectID}`))
       if (file.cancelledAt) return yield* Effect.fail(new Error("Project is cancelled"))
+      // Workers must be children of the canonical root; callers bypassing
+      // get() still land on the migrated root before any session is spawned.
+      if (!file.sessionID) {
+        yield* ensureRootSession(projectID)
+        const migrated = yield* Effect.promise(() => loadProject(projectID))
+        if (migrated?.sessionID) file.sessionID = migrated.sessionID
+      }
       const control = yield* Effect.promise(() => loadControlState(projectID))
       // Paused/pausing barrier: no new scheduling
       if (control.status === "paused" || control.status === "pausing") return yield* Effect.fail(new Error(`Project is ${control.status}`))
@@ -322,6 +498,18 @@ export const layer = Layer.effect(
       activeRuns.add(projectID)
       if (file.workspace) ensureDiffstatWatcher(projectID, file.workspace)
       yield* Effect.promise(() => saveProject(projectID, file))
+
+      // The scheduling loop runs detached from the request fiber; carry the
+      // instance/workspace context explicitly so worker sessions stay bound
+      // to the project instance that started them.
+      const instance = yield* InstanceRef
+      const workspaceID = yield* WorkspaceRef
+      const detached = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
+        let provided = effect
+        if (instance) provided = Effect.provideService(InstanceRef, instance)(provided)
+        if (workspaceID) provided = Effect.provideService(WorkspaceRef, workspaceID)(provided)
+        return provided
+      }
 
       void (async () => {
         try {
@@ -387,16 +575,20 @@ export const layer = Layer.effect(
                   completedDependencies: [...task.dependencies],
                 })
                 const child = await Effect.runPromise(
-                  sessions.create({
-                    title: `[orchestrator] ${task.id}`,
-                    ...(file.sessionID ? { parentID: file.sessionID as never } : {}),
-                  }),
+                  detached(
+                    sessions.create({
+                      title: `[orchestrator] ${task.id}`,
+                      ...(file.sessionID ? { parentID: file.sessionID as never } : {}),
+                    }),
+                  ),
                 )
                 const response = await Effect.runPromise(
-                  promptService.prompt({
-                    sessionID: child.id,
-                    parts: [{ type: "text", text: contractToPrompt(contract) }],
-                  }),
+                  detached(
+                    promptService.prompt({
+                      sessionID: child.id,
+                      parts: [{ type: "text", text: contractToPrompt(contract) }],
+                    }),
+                  ),
                 )
                 const filesChanged = file.workspace
                   ? await Effect.runPromise(
@@ -463,7 +655,93 @@ export const layer = Layer.effect(
     })
 
     const chat = Effect.fn("Orchestrator.chat")(function* (input: { projectID: string; text: string }) {
-      return routeProjectMessage(input.text)
+      // Project conversation resolves through the canonical root session:
+      // projectID → rootSessionID → routing. Workers are never addressed here.
+      yield* ensureRootSession(input.projectID)
+      const file = yield* Effect.promise(() => loadProject(input.projectID))
+      if (!file?.sessionID) return yield* Effect.fail(new Error(`Unknown project: ${input.projectID}`))
+      const rootSessionID = file.sessionID
+
+      const route = routeProjectMessage(input.text)
+      let instructionStatus: ProjectChatResult["instructionStatus"]
+
+      if ((route.intent === "instruction" || route.intent === "memory_correction" || route.intent === "direct_project_command") && route.instructionText) {
+        const knownTaskIDs = file.roadmap.tasks.map((task) => task.id)
+        const knownTaskTitles = file.roadmap.tasks.map((task) => task.title)
+        const activeRunningTasks = file.roadmap.tasks.filter((task) => task.status === "running").map((task) => task.id)
+        const classified = classifyInstruction(route.instructionText, {
+          knownTaskIDs,
+          knownTaskTitles,
+          ...(activeRunningTasks.length > 0 ? { activeRunningTasks } : {}),
+        })
+        const existing = file.instructions ?? []
+        const supersession = detectSupersession(route.instructionText, existing)
+
+        if (supersession.duplicateOfID) {
+          instructionStatus = "rejected"
+        } else {
+          if (supersession.supersedesID) {
+            for (const prior of existing) {
+              if (prior.id === supersession.supersedesID) prior.status = "superseded"
+            }
+          }
+          const now = Date.now()
+          const instruction: ProjectInstruction = {
+            id: `ins-${now.toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+            projectID: input.projectID,
+            text: route.instructionText,
+            source: "user",
+            status: "queued",
+            urgency: "normal",
+            roadmapVersionReceived: file.roadmap.version,
+            objectiveVersionReceived: file.objective.version,
+            createdAt: now,
+            updatedAt: now,
+            disposition: {
+              kind: classified.kind,
+              summary: route.instructionText.slice(0, 200),
+              affectedTaskIDs: [...classified.taskIDs],
+              affectedArtifactIDs: [],
+              requiresRoadmapMutation: !["idea", "no_change", "clarification"].includes(classified.kind),
+              requiresWorkerInterruption: false,
+              requiresClarification: classified.kind === "clarification",
+              confidence: classified.confidence,
+              reasonCodes: [...classified.reasonCodes],
+            },
+          }
+          existing.push(instruction)
+          file.instructions = existing
+          instructionStatus = supersession.supersedesID ? "superseded" : "queued"
+        }
+      } else if (route.intent === "idea" && route.ideaText) {
+        const now = Date.now()
+        const idea: ProjectIdea = {
+          id: `idea-${now.toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+          projectID: input.projectID,
+          text: route.ideaText,
+          sourceInstructionID: "",
+          status: "captured",
+          createdAt: now,
+        }
+        file.ideas = [...(file.ideas ?? []), idea]
+      }
+
+      // Human message persists in the root session through the normal Session
+      // subsystem; ledger updates persist with the project state.
+      if (instructionStatus !== "rejected") {
+        yield* appendRootMessage(rootSessionID, input.text)
+      }
+      yield* Effect.promise(() => saveProject(input.projectID, file))
+
+      return {
+        intent: route.intent,
+        rootSessionID,
+        ...(route.instructionText ? { instructionText: route.instructionText } : {}),
+        ...(route.queryText ? { queryText: route.queryText } : {}),
+        ...(route.ideaText ? { ideaText: route.ideaText } : {}),
+        reason: route.reason,
+        ...(instructionStatus ? { instructionStatus } : {}),
+      }
     })
 
     const compactBrain = Effect.fn("Orchestrator.compactBrain")(function* (projectID: string) {
