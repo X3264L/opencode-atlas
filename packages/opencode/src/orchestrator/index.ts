@@ -196,9 +196,9 @@ export const layer = Layer.effect(
     }
 
     setToolLifecycleHooks(
-      (sessionID, callID, tool) => {
+      (sessionID, callID, tool, interruptionClass) => {
         const reg = interruptionCoordinator.getWorkerBySession(sessionID)
-        if (reg) interruptionCoordinator.trackToolStart(reg.workerID, callID, tool)
+        if (reg) interruptionCoordinator.trackToolStart(reg.workerID, callID, tool, interruptionClass)
       },
       (sessionID, callID, tool) => {
         const reg = interruptionCoordinator.getWorkerBySession(sessionID)
@@ -762,6 +762,35 @@ export const layer = Layer.effect(
                   ),
                   completedDependencies: [...task.dependencies],
                 })
+                const previousWorker = interruptionCoordinator.getWorkerByTask(task.id)
+                const previousToolOutput = previousWorker
+                  ? (await Effect.runPromise(
+                      detached(sessions.messages({ sessionID: previousWorker.sessionID as never })),
+                    ))
+                      .flatMap((message) => message.parts)
+                      .filter((part) => part.type === "tool")
+                      .map((part) => part as unknown as { state?: { status?: string; output?: unknown } })
+                      .filter((part) => part.state?.status === "completed")
+                      .map((part) => String(part.state?.output ?? ""))
+                      .find(Boolean)
+                  : undefined
+                const handoff = previousToolOutput
+                  ? createHandoff({
+                      fromWorkerID: previousWorker?.workerID,
+                      toRoleID: contract.workerProfile ?? "general",
+                      taskID: task.id,
+                      taskRevision: task.revision,
+                      priorResult: {
+                        taskID: task.id,
+                        status: "completed",
+                        summary: previousToolOutput,
+                        artifacts: [],
+                        startedAt: 0,
+                        finishedAt: Date.now(),
+                      },
+                      reasonCode: "worker_replacement",
+                    })
+                  : undefined
                 const child = await Effect.runPromise(
                   detached(
                     sessions.create({
@@ -775,7 +804,14 @@ export const layer = Layer.effect(
                   detached(
                     promptService.prompt({
                       sessionID: child.id,
-                      parts: [{ type: "text", text: contractToPrompt(contract) }],
+                      parts: [
+                        {
+                          type: "text",
+                          text: [contractToPrompt(contract), handoff && handoffToPromptText(handoff)]
+                            .filter(Boolean)
+                            .join("\n\n"),
+                        },
+                      ],
                     }),
                   ),
                 )

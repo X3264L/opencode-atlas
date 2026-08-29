@@ -58,6 +58,8 @@ export interface Def<
 > {
   id: string
   description: string
+  /** Optional classification supplied by an integration-owned tool definition. */
+  interruptionClass?: "read_only_cancellable" | "cancellable" | "side_effectful" | "non_cancellable" | "unknown"
   parameters: Parameters
   jsonSchema?: JSONSchema7
   execute(args: Schema.Schema.Type<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>

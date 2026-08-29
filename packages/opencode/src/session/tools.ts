@@ -104,7 +104,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         return run.promise(
           Effect.gen(function* () {
             const ctx = context(args, options)
-            notifyToolStart(ctx.sessionID, ctx.callID ?? "", item.id)
+            notifyToolStart(ctx.sessionID, ctx.callID ?? "", item.id, item.interruptionClass)
             yield* plugin.trigger(
               "tool.execute.before",
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },

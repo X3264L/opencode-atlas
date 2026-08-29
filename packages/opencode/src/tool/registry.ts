@@ -135,11 +135,14 @@ const layer = Layer.effect(
           const parameters = zodParams
             ? Schema.declare<unknown>((u): u is unknown => zodParams.safeParse(u).success)
             : Schema.Unknown
+          const interruptionClass = (def as ToolDefinition & { interruptionClass?: Tool.Def["interruptionClass"] })
+            .interruptionClass
           return {
             id,
             parameters,
             jsonSchema,
             description: def.description,
+            ...(interruptionClass ? { interruptionClass } : {}),
             execute: (args, toolCtx) =>
               Effect.gen(function* () {
                 // Bridge the host's Effect-based `ask` into a Promise-returning
@@ -331,6 +334,7 @@ const layer = Layer.effect(
               .join("\n"),
             parameters: output.parameters,
             jsonSchema,
+            interruptionClass: tool.interruptionClass,
             execute: tool.execute,
             formatValidationError: tool.formatValidationError,
           }

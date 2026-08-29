@@ -125,10 +125,10 @@ export class WorkerInterruptionCoordinator {
     this.workers.delete(workerID)
   }
 
-  trackToolStart(workerID: string, toolCallID: string, name: string): void {
+  trackToolStart(workerID: string, toolCallID: string, name: string, safety?: ToolInterruptionClass): void {
     const reg = this.workers.get(workerID)
     if (!reg) return
-    reg.activeTool = { toolCallID, name, safety: classifyToolInterruption(name), startedAt: Date.now() }
+    reg.activeTool = { toolCallID, name, safety: safety ?? classifyToolInterruption(name), startedAt: Date.now() }
   }
 
   trackToolSettled(workerID: string, toolCallID: string): void {

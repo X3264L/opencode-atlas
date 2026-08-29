@@ -43,6 +43,7 @@ export function createHandoff(input: {
 /** Renders handoff as text for inclusion in replacement worker's prompt */
 export function handoffToPromptText(handoff: WorkerHandoff): string {
   const lines = [`## Handoff from previous worker (${handoff.reasonCode})`]
+  if (handoff.contextPackSummary) lines.push("", "### Prior worker result", handoff.contextPackSummary)
   if (handoff.blockers.length > 0) lines.push("", "### Blockers", ...handoff.blockers.map((b) => `- ${b}`))
   if (handoff.validArtifactIDs.length > 0)
     lines.push("", "### Valid artifacts from prior work", ...handoff.validArtifactIDs.map((id) => `- ${id}`))

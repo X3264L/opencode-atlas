@@ -21,7 +21,19 @@ export function hasInterruptionBarrier(sessionID: string): boolean {
 
 // ---- Tool lifecycle hooks for the interruption coordinator ----
 
-type ToolLifecycleCallback = (sessionID: string, callID: string, tool: string) => void
+type ToolInterruptionClass =
+  | "read_only_cancellable"
+  | "cancellable"
+  | "side_effectful"
+  | "non_cancellable"
+  | "unknown"
+
+type ToolLifecycleCallback = (
+  sessionID: string,
+  callID: string,
+  tool: string,
+  interruptionClass?: ToolInterruptionClass,
+) => void
 
 let toolStartHook: ToolLifecycleCallback | null = null
 let toolSettledHook: ToolLifecycleCallback | null = null
@@ -36,8 +48,13 @@ export function setToolLifecycleHooks(
 }
 
 /** Called by the tool wrapper when a tool is about to execute. */
-export function notifyToolStart(sessionID: string, callID: string, tool: string): void {
-  toolStartHook?.(sessionID, callID, tool)
+export function notifyToolStart(
+  sessionID: string,
+  callID: string,
+  tool: string,
+  interruptionClass?: ToolInterruptionClass,
+): void {
+  toolStartHook?.(sessionID, callID, tool, interruptionClass)
 }
 
 /** Called by the tool wrapper after a tool finishes (success, error, or cancel). */
