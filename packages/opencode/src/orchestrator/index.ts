@@ -53,7 +53,7 @@ import { createDiffstatWatcher } from "./diffstat-watcher"
 import { workingTreeStats } from "./working-tree"
 import { loadBrain as loadBrainStore, saveBrain as saveBrainStore } from "../brain/store"
 import { MessageID, PartID } from "@/session/schema"
-import { addInterruptionBarrier, removeInterruptionBarrier } from "@/session/interruption-barrier"
+import { addInterruptionBarrier, removeInterruptionBarrier, setToolLifecycleHooks } from "@/session/interruption-barrier"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { AtlasRouter } from "@/router/index"
 import {
@@ -194,6 +194,17 @@ export const layer = Layer.effect(
       const records = [...interruptionCoordinator.getPendingByProject(targetProjectID)]
       void WorkerInterruptionCoordinator.persist(targetProjectID, records).catch(() => {})
     }
+
+    setToolLifecycleHooks(
+      (sessionID, callID, tool) => {
+        const reg = interruptionCoordinator.getWorkerBySession(sessionID)
+        if (reg) interruptionCoordinator.trackToolStart(reg.workerID, callID, tool)
+      },
+      (sessionID, callID, tool) => {
+        const reg = interruptionCoordinator.getWorkerBySession(sessionID)
+        if (reg) interruptionCoordinator.trackToolSettled(reg.workerID, callID)
+      },
+    )
 
     // Wire real tool lifecycle: subscribe to session part updates via the bridge.
     // Tool part status changes indicate tool start/settle for worker-owned sessions.
@@ -550,6 +561,17 @@ export const layer = Layer.effect(
     const get = Effect.fn("Orchestrator.get")(function* (projectID: string) {
       const probe = yield* Effect.promise(() => loadProject(projectID))
       if (!probe) return undefined
+      // Reconcile persisted interruptions on project load.
+      yield* Effect.promise(() =>
+        WorkerInterruptionCoordinator.reconcileProject(projectID, (interruption, action) => {
+          if (action === "admit_replacement") {
+            publish(bridge, InstructionEvent.WorkerInterruptionRequested, {
+              projectID,
+              taskID: interruption.taskID,
+            })
+          }
+        }),
+      ).pipe(Effect.catch(() => Effect.void))
       // One canonical root session per project; legacy/missing IDs migrate here.
       yield* ensureRootSession(projectID)
       const file = yield* Effect.promise(() => loadProject(projectID))
@@ -722,7 +744,6 @@ export const layer = Layer.effect(
                     }),
                   ),
                 )
-                if (process.env.DEBUG_INTEL === "1") console.error("DBG reg", task.id, child.id)
                 interruptionCoordinator.register(projectID, child.id, child.id, task.id, task.revision)
                 const response = await Effect.runPromise(
                   detached(
@@ -740,19 +761,49 @@ export const layer = Layer.effect(
                       ),
                     )
                   : []
-                // The worker's authoritative output is the session transcript,
-                // not the prompt call's return value.
-                let transcript: { parts: { type: string; text?: string }[] }[] = []
-                try {
-                  transcript = await Effect.runPromise(
-                    detached(sessions.messages({ sessionID: child.id })),
-                  )
-                } catch {}
-                const lastAssistantText = [...transcript]
-                  .reverse()
-                  .flatMap((entry) => entry.parts)
-                  .find((part) => part.type === "text" && (part as unknown as { text?: string }).text)
-                const lastText = lastAssistantText
+                let lastText: { text?: string } | undefined
+                {
+                  const fromReply = [...response.parts]
+                    .reverse()
+                    .find((part) => part.type === "text" && (part as unknown as { text?: string }).text)
+                  if (fromReply) {
+                    lastText = fromReply as unknown as { text?: string }
+                  } else {
+                    let transcript: { parts: { type: string; text?: string }[] }[] = []
+                    try {
+                      transcript = (await Effect.runPromise(
+                        detached(sessions.messages({ sessionID: child.id })),
+                      )) as unknown as { parts: { type: string; text?: string }[] }[]
+                    } catch {}
+                    lastText = [...transcript]
+                      .reverse()
+                      .flatMap((entry) => entry.parts)
+                      .find((part) => part.type === "text" && (part as unknown as { text?: string }).text)
+                  }
+                }
+                // Fence check BEFORE any downstream side effect: brain write,
+                // artifact write, model distill, verification. Stale workers
+                // retain their tool result for audit but perform no writes.
+                if (interruptionCoordinator.isStale(task.id, child.id)) {
+                  const pendingInterruptions = interruptionCoordinator.getPendingByProject(projectID)
+                  const staleInterruptionID = pendingInterruptions.find((i) => i.taskID === task.id)?.id
+                  publish(bridge, InstructionEvent.WorkerResultStale, {
+                    projectID,
+                    taskID: task.id,
+                    contractRoadmapVersion: task.revision,
+                    currentRoadmapVersion: file.roadmap.version,
+                    ...(staleInterruptionID ? { interruptionID: staleInterruptionID } : {}),
+                  })
+                  return {
+                    taskID: task.id,
+                    status: "cancelled" as const,
+                    summary: "stale worker result rejected",
+                    artifacts: [],
+                    startedAt: Date.now(),
+                    finishedAt: Date.now(),
+                    blockers: ["stale_worker_result"],
+                  }
+                }
                 const workerResult = {
                   taskID: task.id,
                   status: "completed" as const,
@@ -803,26 +854,6 @@ export const layer = Layer.effect(
                   }
                 }
                 // Fence check: reject stale worker results after replacement.
-                if (interruptionCoordinator.isStale(task.id, child.id)) {
-                  const pendingInterruptions = interruptionCoordinator.getPendingByProject(projectID)
-                  const staleInterruptionID = pendingInterruptions.find((i) => i.taskID === task.id)?.id
-                  publish(bridge, InstructionEvent.WorkerResultStale, {
-                    projectID,
-                    taskID: task.id,
-                    contractRoadmapVersion: task.revision,
-                    currentRoadmapVersion: file.roadmap.version,
-                    ...(staleInterruptionID ? { interruptionID: staleInterruptionID } : {}),
-                  })
-                  return {
-                    taskID: task.id,
-                    status: "cancelled" as const,
-                    summary: "stale worker result rejected",
-                    artifacts: [],
-                    startedAt: Date.now(),
-                    finishedAt: Date.now(),
-                    blockers: ["stale_worker_result"],
-                  }
-                }
                 return workerResult
               },
               verify: async (_task, result) => ({

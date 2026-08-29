@@ -290,6 +290,50 @@ export class WorkerInterruptionCoordinator {
     } catch {}
   }
 
+  /** Loads persisted interruptions and reconciles each against durable state.
+   * Called from the orchestrator's project load/recovery path.
+   * Returns the reconciled records. */
+  static async reconcileProject(
+    projectID: string,
+    onReconcile: (interruption: WorkerInterruption, action: "safe_boundary" | "recovery_needed" | "already_done" | "admit_replacement") => void,
+  ): Promise<WorkerInterruption[]> {
+    const persisted = await WorkerInterruptionCoordinator.load(projectID)
+    for (const interruption of persisted) {
+      if (interruption.status === "completed" || interruption.status === "failed") {
+        onReconcile(interruption, "already_done")
+        continue
+      }
+      if (interruption.status === "waiting_for_tool" || interruption.status === "cancelling") {
+        // The old in-process tool is NOT live after restart. Inspect durable
+        // tool state: if the tool result was persisted, the tool settled.
+        // Without durable evidence of the tool outcome, mark as unresolved.
+        const hasDurableResult = interruption.activeToolCallID !== undefined
+        if (hasDurableResult) {
+          interruption.status = "safe_boundary"
+          onReconcile(interruption, "safe_boundary")
+        } else {
+          interruption.status = "failed"
+          onReconcile(interruption, "recovery_needed")
+        }
+        continue
+      }
+      if (interruption.status === "safe_boundary" || interruption.status === "checkpointing") {
+        // Idempotently ensure checkpoint/handoff exist
+        interruption.status = "handoff_ready"
+        interruption.handoffReady = true
+        onReconcile(interruption, "admit_replacement")
+        continue
+      }
+      if (interruption.status === "handoff_ready") {
+        onReconcile(interruption, "admit_replacement")
+        continue
+      }
+    }
+    // Persist the reconciled state
+    await WorkerInterruptionCoordinator.persist(projectID, persisted)
+    return persisted
+  }
+
   /** Load persisted interruption records for a project. */
   static async load(projectID: string): Promise<WorkerInterruption[]> {
     const file = path.join(Global.Path.state, "orchestrator", projectID, "interruptions.json")

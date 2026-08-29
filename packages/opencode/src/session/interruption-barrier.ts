@@ -18,3 +18,29 @@ export function removeInterruptionBarrier(sessionID: string): void {
 export function hasInterruptionBarrier(sessionID: string): boolean {
   return barriers.has(sessionID)
 }
+
+// ---- Tool lifecycle hooks for the interruption coordinator ----
+
+type ToolLifecycleCallback = (sessionID: string, callID: string, tool: string) => void
+
+let toolStartHook: ToolLifecycleCallback | null = null
+let toolSettledHook: ToolLifecycleCallback | null = null
+
+/** The orchestrator registers these to feed the interruption coordinator. */
+export function setToolLifecycleHooks(
+  onStart: ToolLifecycleCallback | null,
+  onSettled: ToolLifecycleCallback | null,
+): void {
+  toolStartHook = onStart
+  toolSettledHook = onSettled
+}
+
+/** Called by the tool wrapper when a tool is about to execute. */
+export function notifyToolStart(sessionID: string, callID: string, tool: string): void {
+  toolStartHook?.(sessionID, callID, tool)
+}
+
+/** Called by the tool wrapper after a tool finishes (success, error, or cancel). */
+export function notifyToolSettled(sessionID: string, callID: string, tool: string): void {
+  toolSettledHook?.(sessionID, callID, tool)
+}
