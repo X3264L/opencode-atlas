@@ -1,4 +1,7 @@
 import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
+import path from "path"
+import Bun from "bun"
+import { Global } from "@opencode-ai/core/global"
 
 // Safe active-tool interruption coordinator.
 //
@@ -277,5 +280,24 @@ export class WorkerInterruptionCoordinator {
 
   private emit(event: { type: string; projectID: string; taskID: string; workerID?: string; cause?: string }): void {
     this.onEvent?.(event)
+  }
+
+  /** Persist all interruption records for a project to disk. */
+  static async persist(projectID: string, interruptions: WorkerInterruption[]): Promise<void> {
+    const file = path.join(Global.Path.state, "orchestrator", projectID, "interruptions.json")
+    try {
+      await Bun.write(file, JSON.stringify(interruptions, null, 2))
+    } catch {}
+  }
+
+  /** Load persisted interruption records for a project. */
+  static async load(projectID: string): Promise<WorkerInterruption[]> {
+    const file = path.join(Global.Path.state, "orchestrator", projectID, "interruptions.json")
+    try {
+      const raw = await Bun.file(file).json()
+      return Array.isArray(raw) ? raw : []
+    } catch {
+      return []
+    }
   }
 }

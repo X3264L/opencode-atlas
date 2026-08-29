@@ -136,7 +136,7 @@ export type Event =
   | EventAtlasRoadmapTaskInvalidated
   | EventAtlasWorkerInterruptionRequested
   | EventAtlasWorkerInterrupted
-  | EventAtlasWorkerResultStale
+  | EventAtlasWorkerResultStaleRejected
   | EventAtlasArtifactInvalidated
   | EventAtlasArtifactSuperseded
   | EventServerInstanceDisposed
@@ -2077,12 +2077,13 @@ export type GlobalEvent = {
       }
     | {
         id: string
-        type: "atlas.worker.result.stale"
+        type: "atlas.worker.result.stale_rejected"
         properties: {
           projectID: string
           taskID: string
           contractRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
           currentRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          interruptionID?: string
         }
       }
     | {
@@ -4058,7 +4059,7 @@ export type V2Event =
   | AtlasRoadmapTaskInvalidated
   | AtlasWorkerInterruptionRequested
   | AtlasWorkerInterrupted
-  | AtlasWorkerResultStale
+  | AtlasWorkerResultStaleRejected
   | AtlasArtifactInvalidated
   | AtlasArtifactSuperseded
 
@@ -8059,12 +8060,12 @@ export type AtlasWorkerInterrupted = {
   }
 }
 
-export type AtlasWorkerResultStale = {
+export type AtlasWorkerResultStaleRejected = {
   id: string
   metadata?: {
     [key: string]: unknown
   }
-  type: "atlas.worker.result.stale"
+  type: "atlas.worker.result.stale_rejected"
   durable?: {
     aggregateID: string
     seq: number
@@ -8076,6 +8077,7 @@ export type AtlasWorkerResultStale = {
     taskID: string
     contractRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity"
     currentRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity"
+    interruptionID?: string
   }
 }
 
@@ -9536,14 +9538,15 @@ export type EventAtlasWorkerInterrupted = {
   }
 }
 
-export type EventAtlasWorkerResultStale = {
+export type EventAtlasWorkerResultStaleRejected = {
   id: string
-  type: "atlas.worker.result.stale"
+  type: "atlas.worker.result.stale_rejected"
   properties: {
     projectID: string
     taskID: string
     contractRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity"
     currentRoadmapVersion: number | "NaN" | "Infinity" | "-Infinity"
+    interruptionID?: string
   }
 }
 

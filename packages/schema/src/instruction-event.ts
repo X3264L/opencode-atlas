@@ -95,12 +95,13 @@ export const WorkerInterrupted = Event.define({
 })
 
 export const WorkerResultStale = Event.define({
-  type: "atlas.worker.result.stale",
+  type: "atlas.worker.result.stale_rejected",
   schema: {
     projectID: Schema.String,
     taskID: Schema.String,
     contractRoadmapVersion: Schema.Number,
     currentRoadmapVersion: Schema.Number,
+    interruptionID: optional(Schema.String),
   },
 })
 

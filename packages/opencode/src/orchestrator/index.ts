@@ -190,6 +190,11 @@ export const layer = Layer.effect(
       }
     })
 
+    const persistInterruptions = (targetProjectID: string) => {
+      const records = [...interruptionCoordinator.getPendingByProject(targetProjectID)]
+      void WorkerInterruptionCoordinator.persist(targetProjectID, records).catch(() => {})
+    }
+
     // Wire real tool lifecycle: subscribe to session part updates via the bridge.
     // Tool part status changes indicate tool start/settle for worker-owned sessions.
     yield* bridge.listen((event) => {
@@ -799,11 +804,14 @@ export const layer = Layer.effect(
                 }
                 // Fence check: reject stale worker results after replacement.
                 if (interruptionCoordinator.isStale(task.id, child.id)) {
+                  const pendingInterruptions = interruptionCoordinator.getPendingByProject(projectID)
+                  const staleInterruptionID = pendingInterruptions.find((i) => i.taskID === task.id)?.id
                   publish(bridge, InstructionEvent.WorkerResultStale, {
                     projectID,
                     taskID: task.id,
                     contractRoadmapVersion: task.revision,
                     currentRoadmapVersion: file.roadmap.version,
+                    ...(staleInterruptionID ? { interruptionID: staleInterruptionID } : {}),
                   })
                   return {
                     taskID: task.id,
@@ -849,7 +857,10 @@ export const layer = Layer.effect(
       const reg = interruptionCoordinator.getWorkerByTask(targetTaskID)
       if (!reg || reg.projectID !== targetProjectID) return null
       const id = interruptionCoordinator.interrupt(targetProjectID, reg.workerID, cause)
-      if (id) addInterruptionBarrier(reg.sessionID)
+      if (id) {
+        addInterruptionBarrier(reg.sessionID)
+        persistInterruptions(targetProjectID)
+      }
 
       // If the safety class allows immediate cancellation, cancel the worker's prompt turn.
       const interruption = interruptionCoordinator.getInterruption(id!)
