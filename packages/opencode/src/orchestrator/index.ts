@@ -563,7 +563,28 @@ export const layer = Layer.effect(
       if (!probe) return undefined
       // Reconcile persisted interruptions on project load.
       yield* Effect.promise(() =>
-        WorkerInterruptionCoordinator.reconcileProject(projectID, (interruption, action) => {
+        WorkerInterruptionCoordinator.reconcileProject(
+        projectID,
+        async (sessionID, toolCallID) => {
+          // Inspect the durable Session tool-part state for terminal result.
+          // A tool part exists for this session with the given callID means
+          // the tool was persisted with a terminal state.
+          try {
+            const msgs = (await Effect.runPromise(
+              sessions.messages({ sessionID: sessionID as never }),
+            )) as unknown as { parts: { type: string; id?: string; state?: { status?: string } }[] }[]
+            return [...msgs]
+              .flatMap((entry) => entry.parts)
+              .some(
+                (part) =>
+                  part.type === "tool" &&
+                  (part as unknown as { id?: string }).id === toolCallID,
+              )
+          } catch {
+            return false
+          }
+        },
+        (interruption, action) => {
           if (action === "admit_replacement") {
             publish(bridge, InstructionEvent.WorkerInterruptionRequested, {
               projectID,

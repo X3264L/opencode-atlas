@@ -292,9 +292,12 @@ export class WorkerInterruptionCoordinator {
 
   /** Loads persisted interruptions and reconciles each against durable state.
    * Called from the orchestrator's project load/recovery path.
+   * `toolTerminalChecker` receives (sessionID, toolCallID) and must return
+   * whether the tool has a durably persisted terminal result.
    * Returns the reconciled records. */
   static async reconcileProject(
     projectID: string,
+    checkToolSettled: (sessionID: string, toolCallID: string) => Promise<boolean>,
     onReconcile: (interruption: WorkerInterruption, action: "safe_boundary" | "recovery_needed" | "already_done" | "admit_replacement") => void,
   ): Promise<WorkerInterruption[]> {
     const persisted = await WorkerInterruptionCoordinator.load(projectID)
@@ -304,16 +307,25 @@ export class WorkerInterruptionCoordinator {
         continue
       }
       if (interruption.status === "waiting_for_tool" || interruption.status === "cancelling") {
-        // The old in-process tool is NOT live after restart. Inspect durable
-        // tool state: if the tool result was persisted, the tool settled.
-        // Without durable evidence of the tool outcome, mark as unresolved.
-        const hasDurableResult = interruption.activeToolCallID !== undefined
-        if (hasDurableResult) {
+        // The old in-process tool is NOT live after restart. Inspect the
+        // durable Session tool-part state for the exact callID. If the tool
+        // has a terminal persisted result, consider it settled.
+        if (interruption.activeToolCallID && interruption.sessionID) {
+          const settled = await checkToolSettled(interruption.sessionID, interruption.activeToolCallID)
+          if (settled) {
+            interruption.status = "safe_boundary"
+            onReconcile(interruption, "safe_boundary")
+          } else {
+            // No terminal durable result: the tool outcome is unknown.
+            // NEVER replay a possibly side-effectful operation.
+            interruption.status = "failed"
+            onReconcile(interruption, "recovery_needed")
+          }
+        } else {
+          // No active tool was tracked — the interruption was requested
+          // between steps. Safe to advance.
           interruption.status = "safe_boundary"
           onReconcile(interruption, "safe_boundary")
-        } else {
-          interruption.status = "failed"
-          onReconcile(interruption, "recovery_needed")
         }
         continue
       }
