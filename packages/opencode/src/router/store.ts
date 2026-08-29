@@ -1,5 +1,5 @@
 import path from "path"
-import Bun from "bun"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { Global } from "@opencode-ai/core/global"
 import { DEFAULT_POLICY, type AtlasRoutingMode, type AtlasRoutingPolicy } from "./types"
 
@@ -35,7 +35,7 @@ export function effectivePolicy(prefs: RoutingPrefsFile): AtlasRoutingPolicy {
 
 export async function readRoutingPrefs(): Promise<RoutingPrefsFile> {
   try {
-    const raw = await Bun.file(storePath()).json()
+    const raw = JSON.parse(await readFile(storePath(), "utf8"))
     return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as RoutingPrefsFile) : {}
   } catch {
     return {}
@@ -44,6 +44,8 @@ export async function readRoutingPrefs(): Promise<RoutingPrefsFile> {
 
 export async function writeRoutingPrefs(prefs: RoutingPrefsFile) {
   try {
-    await Bun.write(storePath(), JSON.stringify(prefs, null, 2))
+    const filePath = storePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    await writeFile(filePath, JSON.stringify(prefs, null, 2))
   } catch {}
 }

@@ -1,5 +1,7 @@
 import path from "path"
-import Bun from "bun"
+import { spawn } from "node:child_process"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { Readable } from "node:stream"
 import { Global } from "@opencode-ai/core/global"
 import { buildLlamaServerArgs, findFreeLoopbackPort, MANAGED_HOST, resolveLlamaServerExecutable, type ExecutableResolution } from "./launch-config"
 import { checkArtifactFile, type ManagedGgufArtifact } from "./gguf"
@@ -51,7 +53,15 @@ export interface ManagedRuntimeInstance {
 interface LiveProcess {
   instanceID: string
   artifactID: string
-  proc: Bun.Subprocess<"ignore", "pipe", "pipe">
+  proc: ManagedChildProcess
+}
+
+interface ManagedChildProcess {
+  pid?: number
+  stdout?: ReadableStream<Uint8Array>
+  stderr?: ReadableStream<Uint8Array>
+  exited: Promise<number | null>
+  kill(signal?: number): void
 }
 
 export interface LogLine {
@@ -93,7 +103,7 @@ export interface ProcessManagerDeps {
   storePath?: string
   now?: () => string
   random?: () => number
-  spawn?: (executable: string, args: string[]) => Bun.Subprocess<"ignore", "pipe", "pipe">
+  spawn?: (executable: string, args: string[]) => ManagedChildProcess
   portProbe?: () => Promise<number>
   healthFetch?: (url: string, timeoutMs: number) => Promise<{ ok: boolean }>
   startupDeadlineMs?: number
@@ -110,11 +120,23 @@ function defaultStorePath() {
 
 function defaultSpawn(executable: string, args: string[]) {
   // Typed argv only - no shell, no command string, no interpolation
-  return Bun.spawn([executable, ...args], {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+  const child = spawn(executable, args, {
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
   })
+  const exited = new Promise<number | null>((resolve) => {
+    child.once("error", () => resolve(null))
+    child.once("close", (code) => resolve(code))
+  })
+  return {
+    pid: child.pid ?? undefined,
+    stdout: child.stdout ? (Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>) : undefined,
+    stderr: child.stderr ? (Readable.toWeb(child.stderr) as unknown as ReadableStream<Uint8Array>) : undefined,
+    exited,
+    kill: (signal?: number) => {
+      child.kill(signal)
+    },
+  }
 }
 
 async function defaultHealthFetch(url: string, timeoutMs: number) {
@@ -223,14 +245,15 @@ export function createManagedLlamaCppManager(deps: ProcessManagerDeps = {}) {
       instances: instanceHistory.slice(-50),
     }
     try {
-      await Bun.write(storePath, JSON.stringify(file, null, 2))
+      await mkdir(path.dirname(storePath), { recursive: true })
+      await writeFile(storePath, JSON.stringify(file, null, 2))
     } catch {}
   }
 
   async function initialize() {
     let file: StoreFile = {}
     try {
-      file = ((await Bun.file(storePath).json()) as StoreFile) ?? {}
+      file = (JSON.parse(await readFile(storePath, "utf8")) as StoreFile) ?? {}
     } catch {}
     artifacts = Array.isArray(file.artifacts) ? file.artifacts : []
     llamaServerPath = typeof file.llamaServerPath === "string" ? file.llamaServerPath : undefined
@@ -421,6 +444,7 @@ export function createManagedLlamaCppManager(deps: ProcessManagerDeps = {}) {
       const endpoint = `http://${MANAGED_HOST}:${port}`
       instance.endpoint = endpoint
       instance.port = port
+      notifySpawned(instance.id)
       instance.phase = "port_selected"
       emitLifecycle(instance)
       if (instances.get(instance.id)?.state !== "starting") return { ...instance }
@@ -429,7 +453,7 @@ export function createManagedLlamaCppManager(deps: ProcessManagerDeps = {}) {
       emitLifecycle(instance)
       const args = buildLlamaServerArgs({ modelPath: artifact.path, port, ...overrides })
 
-      let proc: Bun.Subprocess<"ignore", "pipe", "pipe">
+      let proc: ManagedChildProcess
       try {
         proc = spawnFn(resolvedExecutable!.path, args)
       } catch (error) {
@@ -443,7 +467,7 @@ export function createManagedLlamaCppManager(deps: ProcessManagerDeps = {}) {
         return { ...instance }
       }
 
-      instance.pid = proc.pid > 0 ? proc.pid : undefined
+      instance.pid = proc.pid !== undefined && proc.pid > 0 ? proc.pid : undefined
       instance.phase = "loading_model"
       commit(instance)
       emitLifecycle(instance)

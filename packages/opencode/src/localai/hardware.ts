@@ -1,6 +1,8 @@
 import os from "os"
 import fs from "fs/promises"
+import { spawn } from "node:child_process"
 import path from "path"
+import { findExecutable } from "./launch-config"
 
 export interface GPUProfile {
   vendor: "nvidia" | "amd" | "intel" | "apple" | "unknown"
@@ -31,24 +33,27 @@ export type CommandRunner = (cmd: string, args: string[], timeoutMs?: number) =>
 const COMMAND_TIMEOUT_MS = 5_000
 
 export async function runCommand(cmd: string, args: string[], timeoutMs = COMMAND_TIMEOUT_MS) {
+  const proc = spawn(cmd, args, { shell: false, stdio: ["ignore", "pipe", "ignore"] })
+  const output: Buffer[] = []
+  proc.stdout?.on("data", (chunk: Buffer | string) => output.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+  const exited = new Promise<number | null>((resolve, reject) => {
+    proc.once("error", reject)
+    proc.once("close", resolve)
+  })
+  const timer = setTimeout(() => proc.kill(), timeoutMs)
   try {
-    const proc = Bun.spawn([cmd, ...args], {
-      stdout: "pipe",
-      stderr: "ignore",
-      stdin: "ignore",
-      timeout: timeoutMs,
-    })
-    const output = await new Response(proc.stdout).text()
-    await proc.exited
-    if (proc.exitCode !== 0) return undefined
-    return output
+    const exitCode = await exited
+    if (exitCode !== 0) return undefined
+    return Buffer.concat(output).toString("utf8")
   } catch {
     return undefined
+  } finally {
+    clearTimeout(timer)
   }
 }
 
 function resolveCommand(name: string) {
-  return Bun.which(name) ?? undefined
+  return findExecutable(name)
 }
 
 async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {

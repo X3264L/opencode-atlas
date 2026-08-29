@@ -1,4 +1,5 @@
 import path from "path"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { Context, Effect, Layer } from "effect"
 import { Global } from "@opencode-ai/core/global"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -162,7 +163,7 @@ function storeFilePath() {
 
 async function readStore(): Promise<AtlasStoreFile> {
   try {
-    const raw = await Bun.file(storeFilePath()).json()
+    const raw = JSON.parse(await readFile(storeFilePath(), "utf8"))
     if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AtlasStoreFile
     return {}
   } catch {
@@ -172,7 +173,9 @@ async function readStore(): Promise<AtlasStoreFile> {
 
 async function writeStore(file: AtlasStoreFile) {
   try {
-    await Bun.write(storeFilePath(), JSON.stringify(file, null, 2))
+    const filePath = storeFilePath()
+    await mkdir(path.dirname(filePath), { recursive: true })
+    await writeFile(filePath, JSON.stringify(file, null, 2))
   } catch {}
 }
 

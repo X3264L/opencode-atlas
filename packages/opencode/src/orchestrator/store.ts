@@ -1,5 +1,5 @@
 import path from "path"
-import Bun from "bun"
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { Global } from "@opencode-ai/core/global"
 import type { Checkpoint, ProjectObjective, Roadmap, WorkerArtifact, PrivacyPolicy } from "./types"
 import type { ProjectInstruction } from "./instructions"
@@ -40,7 +40,9 @@ function dirFor(projectID: string) {
  * project identity cannot be committed).
  */
 export async function writeProjectStrict(projectID: string, file: ProjectFile) {
-  await Bun.write(path.join(dirFor(projectID), "project.json"), JSON.stringify(file, null, 2))
+  const filePath = path.join(dirFor(projectID), "project.json")
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, JSON.stringify(file, null, 2))
 }
 
 export async function saveProject(projectID: string, file: ProjectFile) {
@@ -51,7 +53,7 @@ export async function saveProject(projectID: string, file: ProjectFile) {
 
 export async function loadProject(projectID: string): Promise<ProjectFile | undefined> {
   try {
-    const raw = await Bun.file(path.join(dirFor(projectID), "project.json")).json()
+    const raw = JSON.parse(await readFile(path.join(dirFor(projectID), "project.json"), "utf8"))
     return raw && typeof raw === "object" ? (raw as ProjectFile) : undefined
   } catch {
     return undefined
@@ -61,8 +63,16 @@ export async function loadProject(projectID: string): Promise<ProjectFile | unde
 export async function listProjects(): Promise<string[]> {
   const base = path.join(Global.Path.state, "orchestrator")
   try {
-    const entries = await Array.fromAsync(new Bun.Glob("*/project.json").scan({ cwd: base, onlyFiles: true }))
-    return entries.map((entry) => path.dirname(entry)).sort()
+    const entries = await readdir(base, { withFileTypes: true })
+    const projects = []
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      try {
+        await readFile(path.join(base, entry.name, "project.json"))
+        projects.push(entry.name)
+      } catch {}
+    }
+    return projects.sort()
   } catch {
     return []
   }

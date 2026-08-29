@@ -1,5 +1,5 @@
 import path from "path"
-import Bun from "bun"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { Global } from "@opencode-ai/core/global"
 import type {
   ProjectMemory,
@@ -33,7 +33,7 @@ function brainPath(projectID: string) {
 
 export async function loadBrain(projectID: string): Promise<BrainFile> {
   try {
-    const raw = await Bun.file(brainPath(projectID)).json()
+    const raw = JSON.parse(await readFile(brainPath(projectID), "utf8"))
     if (!raw || typeof raw !== "object") return emptyBrainFile()
     // Backward compat: SUPER++005/006 projects have no brain file at all
     return {
@@ -51,9 +51,9 @@ export async function loadBrain(projectID: string): Promise<BrainFile> {
 }
 
 export async function saveBrain(projectID: string, file: BrainFile) {
-  const dir = path.dirname(brainPath(projectID))
-  await Bun.write(brainPath(projectID), JSON.stringify(file, null, 2))
-  void dir
+  const filePath = brainPath(projectID)
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, JSON.stringify(file, null, 2))
 }
 
 /** Deterministic bootstrap from existing structured project state */

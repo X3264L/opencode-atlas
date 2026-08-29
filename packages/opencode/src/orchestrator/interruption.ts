@@ -1,6 +1,6 @@
 import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
 import path from "path"
-import Bun from "bun"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { Global } from "@opencode-ai/core/global"
 
 // Safe active-tool interruption coordinator.
@@ -286,7 +286,8 @@ export class WorkerInterruptionCoordinator {
   static async persist(projectID: string, interruptions: WorkerInterruption[]): Promise<void> {
     const file = path.join(Global.Path.state, "orchestrator", projectID, "interruptions.json")
     try {
-      await Bun.write(file, JSON.stringify(interruptions, null, 2))
+      await mkdir(path.dirname(file), { recursive: true })
+      await writeFile(file, JSON.stringify(interruptions, null, 2))
     } catch {}
   }
 
@@ -351,7 +352,7 @@ export class WorkerInterruptionCoordinator {
   static async load(projectID: string): Promise<WorkerInterruption[]> {
     const file = path.join(Global.Path.state, "orchestrator", projectID, "interruptions.json")
     try {
-      const raw = await Bun.file(file).json()
+      const raw = JSON.parse(await readFile(file, "utf8"))
       return Array.isArray(raw) ? raw : []
     } catch {
       return []

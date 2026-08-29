@@ -1,6 +1,7 @@
 import fs from "fs/promises"
+import { accessSync, constants } from "node:fs"
+import { createServer } from "node:net"
 import path from "path"
-import Bun from "bun"
 
 // Atlas-managed llama-server launch plumbing. Everything here is typed and
 // shell-free: the executable is spawned with an argument array, never a
@@ -37,6 +38,22 @@ export interface ExecutableLookupDeps {
   platform?: string
 }
 
+export function findExecutable(name: string): string | undefined {
+  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)
+  const extensions = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""]
+  const candidates = path.isAbsolute(name)
+    ? [name]
+    : pathEntries.flatMap((entry) => extensions.map((extension) => path.join(entry, name + extension)))
+  return candidates.find((candidate) => {
+    try {
+      accessSync(candidate, constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 /**
  * Locates llama-server without downloading anything. Order:
  * explicit configured path → PATH lookup → a few common local install spots.
@@ -46,7 +63,7 @@ export async function resolveLlamaServerExecutable(
   deps: ExecutableLookupDeps = {},
 ): Promise<ExecutableResolution> {
   const existsFile = deps.existsFile ?? isExecutableFile
-  const which = deps.which ?? ((name: string) => Bun.which(name))
+  const which = deps.which ?? findExecutable
 
   if (configuredPath) {
     if (await existsFile(configuredPath)) {
@@ -114,14 +131,14 @@ export function buildLlamaServerArgs(config: LlamaServerLaunchConfig): string[] 
  */
 export async function findFreeLoopbackPort(probe?: () => Promise<number>): Promise<number> {
   if (probe) return probe()
-  const server = Bun.listen({
-    hostname: MANAGED_HOST,
-    port: 0,
-    socket: {
-      data() {},
-    },
+  const server = createServer()
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen({ host: MANAGED_HOST, port: 0 }, () => resolve())
   })
-  const port = server.port
-  server.stop(true)
+  const address = server.address()
+  const port = typeof address === "object" && address ? address.port : undefined
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+  if (port === undefined) throw new Error("Failed to determine loopback port")
   return port
 }

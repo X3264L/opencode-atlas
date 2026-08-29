@@ -1,5 +1,5 @@
 import path from "path"
-import Bun from "bun"
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { Global } from "@opencode-ai/core/global"
 
 // Persisted control state + checkpoint metadata (file-backed, restart-safe)
@@ -65,7 +65,7 @@ function checkpointPath(projectID: string, checkpointID: string) {
 
 export async function loadControlState(projectID: string): Promise<ProjectControlState> {
   try {
-    const raw = await Bun.file(controlPath(projectID)).json()
+    const raw = JSON.parse(await readFile(controlPath(projectID), "utf8"))
     if (raw && typeof raw === "object" && typeof raw.status === "string") return raw as ProjectControlState
   } catch {}
   return { status: "running" }
@@ -73,22 +73,23 @@ export async function loadControlState(projectID: string): Promise<ProjectContro
 
 export async function saveControlState(projectID: string, state: ProjectControlState): Promise<void> {
   const file = controlPath(projectID)
-  await Bun.write(file, JSON.stringify(state, null, 2))
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, JSON.stringify(state, null, 2))
 }
 
 export async function saveCheckpoint(checkpoint: ProjectCheckpoint): Promise<void> {
   const dir = checkpointDir(checkpoint.projectID)
-  // ensure dir via Bun.write will create, but ensure parent
+  await mkdir(dir, { recursive: true })
   const file = checkpointPath(checkpoint.projectID, checkpoint.id)
-  await Bun.write(file, JSON.stringify(checkpoint, null, 2))
+  await writeFile(file, JSON.stringify(checkpoint, null, 2))
   // also update latest pointer
   const latestPath = path.join(dir, "_latest.json")
-  await Bun.write(latestPath, JSON.stringify({ id: checkpoint.id }, null, 2))
+  await writeFile(latestPath, JSON.stringify({ id: checkpoint.id }, null, 2))
 }
 
 export async function loadCheckpoint(projectID: string, checkpointID: string): Promise<ProjectCheckpoint | undefined> {
   try {
-    const raw = await Bun.file(checkpointPath(projectID, checkpointID)).json()
+    const raw = JSON.parse(await readFile(checkpointPath(projectID, checkpointID), "utf8"))
     return raw as ProjectCheckpoint
   } catch {
     return undefined
@@ -98,16 +99,18 @@ export async function loadCheckpoint(projectID: string, checkpointID: string): P
 export async function listCheckpoints(projectID: string): Promise<ProjectCheckpoint[]> {
   const dir = checkpointDir(projectID)
   try {
-    const entries = await Array.fromAsync(new Bun.Glob("chk-*.json").scan({ cwd: dir, onlyFiles: true }))
+    const entries = (await readdir(dir, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && /^chk-.*\.json$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort()
     const checkpoints: ProjectCheckpoint[] = []
     for (const entry of entries) {
-      if (entry === "_latest.json") continue
       try {
-        const raw = await Bun.file(path.join(dir, entry)).json()
+        const raw = JSON.parse(await readFile(path.join(dir, entry), "utf8"))
         checkpoints.push(raw as ProjectCheckpoint)
       } catch {}
     }
-    checkpoints.sort((a, b) => a.createdAt - b.createdAt)
+    checkpoints.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     return checkpoints
   } catch {
     return []
@@ -123,8 +126,6 @@ export async function latestCheckpoint(projectID: string): Promise<ProjectCheckp
 export async function ensureCheckpointDir(projectID: string) {
   try {
     const dir = checkpointDir(projectID)
-    // Bun.write creates parent dirs, but an explicit mkdir keeps listing races quiet
-    const { mkdir } = await import("node:fs/promises")
     await mkdir(dir, { recursive: true })
   } catch {}
 }
@@ -132,7 +133,9 @@ export async function ensureCheckpointDir(projectID: string) {
 /** Organization plan version when a persisted org file exists; undefined honestly otherwise */
 export async function loadOrganizationVersion(projectID: string): Promise<number | undefined> {
   try {
-    const raw = await Bun.file(path.join(Global.Path.state, "orchestrator", projectID, "org.json")).json()
+    const raw = JSON.parse(
+      await readFile(path.join(Global.Path.state, "orchestrator", projectID, "org.json"), "utf8"),
+    )
     if (raw && typeof raw === "object" && typeof raw.version === "number") return raw.version
   } catch {}
   return undefined
