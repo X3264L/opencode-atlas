@@ -293,11 +293,12 @@ export class WorkerInterruptionCoordinator {
   /** Loads persisted interruptions and reconciles each against durable state.
    * Called from the orchestrator's project load/recovery path.
    * `toolTerminalChecker` receives (sessionID, toolCallID) and must return
-   * whether the tool has a durably persisted terminal result.
+   * one of: "terminal" (done/completed/error/cancelled), "non_terminal"
+   * (pending/running), or "missing" (no matching tool part found).
    * Returns the reconciled records. */
   static async reconcileProject(
     projectID: string,
-    checkToolSettled: (sessionID: string, toolCallID: string) => Promise<boolean>,
+    checkToolState: (sessionID: string, toolCallID: string) => Promise<"terminal" | "non_terminal" | "missing">,
     onReconcile: (interruption: WorkerInterruption, action: "safe_boundary" | "recovery_needed" | "already_done" | "admit_replacement") => void,
   ): Promise<WorkerInterruption[]> {
     const persisted = await WorkerInterruptionCoordinator.load(projectID)
@@ -308,16 +309,16 @@ export class WorkerInterruptionCoordinator {
       }
       if (interruption.status === "waiting_for_tool" || interruption.status === "cancelling") {
         // The old in-process tool is NOT live after restart. Inspect the
-        // durable Session tool-part state for the exact callID. If the tool
-        // has a terminal persisted result, consider it settled.
+        // durable Session tool-part state for the exact callID.
         if (interruption.activeToolCallID && interruption.sessionID) {
-          const settled = await checkToolSettled(interruption.sessionID, interruption.activeToolCallID)
-          if (settled) {
+          const toolState = await checkToolState(interruption.sessionID, interruption.activeToolCallID)
+          if (toolState === "terminal") {
+            // Terminal tool result persisted: tool settled, safe to advance.
             interruption.status = "safe_boundary"
             onReconcile(interruption, "safe_boundary")
           } else {
-            // No terminal durable result: the tool outcome is unknown.
-            // NEVER replay a possibly side-effectful operation.
+            // Non-terminal (pending/running) or missing: the tool outcome is
+            // unknown. NEVER replay a possibly side-effectful operation.
             interruption.status = "failed"
             onReconcile(interruption, "recovery_needed")
           }

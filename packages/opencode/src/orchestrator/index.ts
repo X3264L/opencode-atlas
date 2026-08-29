@@ -566,22 +566,27 @@ export const layer = Layer.effect(
         WorkerInterruptionCoordinator.reconcileProject(
         projectID,
         async (sessionID, toolCallID) => {
-          // Inspect the durable Session tool-part state for terminal result.
-          // A tool part exists for this session with the given callID means
-          // the tool was persisted with a terminal state.
+          // Inspect the durable Session tool-part state for TERMINAL result.
+          // Terminal statuses: "completed" | "error" (done state).
+          // Non-terminal: "pending" | "running".
+          // Missing: no matching tool part found.
           try {
             const msgs = (await Effect.runPromise(
               sessions.messages({ sessionID: sessionID as never }),
             )) as unknown as { parts: { type: string; id?: string; state?: { status?: string } }[] }[]
-            return [...msgs]
-              .flatMap((entry) => entry.parts)
-              .some(
-                (part) =>
-                  part.type === "tool" &&
-                  (part as unknown as { id?: string }).id === toolCallID,
-              )
+            for (const entry of msgs) {
+              for (const part of entry.parts) {
+                if (part.type !== "tool") continue
+                const toolPart = part as unknown as { id?: string; state?: { status?: string } }
+                if (toolPart.id !== toolCallID) continue
+                const status = toolPart.state?.status ?? ""
+                if (status === "completed" || status === "error") return "terminal"
+                if (status === "pending" || status === "running") return "non_terminal"
+              }
+            }
+            return "missing"
           } catch {
-            return false
+            return "missing"
           }
         },
         (interruption, action) => {

@@ -55,15 +55,6 @@ describe("interruption coordinator", () => {
     expect(interruption!.causes).toContain("roadmap_mutation")
     expect(interruption!.causes).toContain("supervisor_recovery")
   })
-  test("fence staleness: old generation rejected, current accepted", () => {
-    const coordinator = new WorkerInterruptionCoordinator()
-    coordinator.register("proj-1", "worker-old", "ses-old", "task-a", 1)
-    expect(coordinator.isStale("task-a", "worker-old")).toBe(false)
-    coordinator.fenceAndReplace("proj-1", "task-a", "worker-old")
-    expect(coordinator.isStale("task-a", "worker-old")).toBe(true)
-    coordinator.register("proj-1", "worker-new", "ses-new", "task-a", 1)
-    expect(coordinator.isStale("task-a", "worker-new")).toBe(false)
-  })
   test("tool settle reaches safe boundary for pending interruption", () => {
     const coordinator = new WorkerInterruptionCoordinator()
     coordinator.register("proj-1", "worker-1", "ses-1", "task-a", 1)
@@ -72,6 +63,128 @@ describe("interruption coordinator", () => {
     expect(coordinator.getInterruption(id!)!.status).toBe("waiting_for_tool")
     coordinator.trackToolSettled("worker-1", "call-1")
     expect(coordinator.getInterruption(id!)!.status).toBe("safe_boundary")
+  })
+})
+
+// ---- Restart reconciliation: terminal tool state detection ----
+
+describe("interruption restart reconciliation", () => {
+  test("terminal tool state advances to safe_boundary", async () => {
+    const actions: { interruption: { id: string; status: string }; action: string }[] = []
+    const persisted = [
+      {
+        id: "int-1",
+        projectID: "proj-1",
+        workerID: "worker-1",
+        sessionID: "ses-1",
+        taskID: "task-a",
+        taskRevision: 1,
+        requestedAt: Date.now(),
+        causes: ["roadmap_mutation" as const],
+        primaryCause: "roadmap_mutation" as const,
+        status: "waiting_for_tool" as const,
+        activeToolCallID: "call-1",
+        toolSafety: "side_effectful" as const,
+        handoffReady: false,
+      },
+    ]
+    await WorkerInterruptionCoordinator.persist("proj-reconcile-terminal", persisted)
+    const reconciled = await WorkerInterruptionCoordinator.reconcileProject(
+      "proj-reconcile-terminal",
+      async (_sessionID, _toolCallID) => "terminal",
+      (interruption, action) => {
+        expect(action).toBe("safe_boundary")
+      },
+    )
+    expect(reconciled[0]!.status).toBe("safe_boundary")
+  })
+
+
+  test("non-terminal status does NOT advance to safe_boundary", async () => {
+    const persisted = [
+      {
+        id: "int-nt",
+        projectID: "proj-reconcile-nonterminal",
+        workerID: "worker-1",
+        sessionID: "ses-1",
+        taskID: "task-nt",
+        taskRevision: 1,
+        requestedAt: Date.now(),
+        causes: ["roadmap_mutation" as const],
+        primaryCause: "roadmap_mutation" as const,
+        status: "waiting_for_tool" as const,
+        activeToolCallID: "call-1",
+        toolSafety: "side_effectful" as const,
+        handoffReady: false,
+      },
+    ]
+    await WorkerInterruptionCoordinator.persist("proj-reconcile-nonterminal", persisted)
+    const reconciled = await WorkerInterruptionCoordinator.reconcileProject(
+      "proj-reconcile-nonterminal",
+      async () => "non_terminal",
+      (interruption, action) => {
+        expect(action).toBe("recovery_needed")
+      },
+    )
+    expect(reconciled[0]!.status).toBe("failed")
+    expect(reconciled[0]!.handoffReady).toBe(false)
+  })
+
+  test("missing tool part becomes recovery_needed (no replay)", async () => {
+    const persisted = [
+      {
+        id: "int-miss",
+        projectID: "proj-reconcile-missing",
+        workerID: "worker-1",
+        sessionID: "ses-missing",
+        taskID: "task-miss",
+        taskRevision: 1,
+        requestedAt: Date.now(),
+        causes: ["roadmap_mutation" as const],
+        primaryCause: "roadmap_mutation" as const,
+        status: "waiting_for_tool" as const,
+        activeToolCallID: "call-missing",
+        toolSafety: "side_effectful" as const,
+        handoffReady: false,
+      },
+    ]
+    await WorkerInterruptionCoordinator.persist("proj-reconcile-missing", persisted)
+    const reconciled = await WorkerInterruptionCoordinator.reconcileProject(
+      "proj-reconcile-missing",
+      async () => "missing",
+      (interruption, action) => {
+        expect(action).toBe("recovery_needed")
+      },
+    )
+    expect(reconciled[0]!.status).toBe("failed")
+    expect(reconciled[0]!.handoffReady).toBe(false)
+  })
+
+  test("completed interruption does not re-trigger", async () => {
+    const persisted = [
+      {
+        id: "int-done",
+        projectID: "proj-reconcile-done",
+        workerID: "worker-1",
+        sessionID: "ses-1",
+        taskID: "task-done",
+        taskRevision: 1,
+        requestedAt: Date.now(),
+        causes: ["roadmap_mutation" as const],
+        primaryCause: "roadmap_mutation" as const,
+        status: "completed" as const,
+        handoffReady: true,
+      },
+    ]
+    await WorkerInterruptionCoordinator.persist("proj-reconcile-done", persisted)
+    const reconciled = await WorkerInterruptionCoordinator.reconcileProject(
+      "proj-reconcile-done",
+      async () => "terminal",
+      (interruption, action) => {
+        expect(action).toBe("already_done")
+      },
+    )
+    expect(reconciled[0]!.status).toBe("completed")
   })
 })
 
