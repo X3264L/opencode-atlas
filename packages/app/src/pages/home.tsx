@@ -7,6 +7,7 @@ import { createHomeScrollController } from "./home/home-scroll-controller"
 import { createHomeSessionSearchController } from "./home/home-session-search-controller"
 import { createHomeSessionsController } from "./home/home-sessions-controller"
 import { HomeSessions } from "./home/home-sessions"
+import { AtlasInitialize } from "./home/atlas-initialize"
 
 export function NewHome() {
   const home = createHomeController()
@@ -29,6 +30,7 @@ export function NewHome() {
         onScroll={(event) => scroll.viewport.update(event.currentTarget.scrollTop)}
         onWheel={scroll.viewport.containOuterWheel}
       >
+        <AtlasInitialize selection={projects.selection.value} servers={projects.server.list} />
         <div
           class={`
             mx-auto grid min-h-full w-full max-w-[1080px] grid-rows-[auto_minmax(0,1fr)_auto] gap-4 px-3
